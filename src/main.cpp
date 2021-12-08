@@ -48,55 +48,59 @@ task<void> amain() {
 
   // std::cout << co_await task<int>::resolve(121212) << std::endl;
 
-  std::string nick = co_await uv::fs::readAll(".irc-nick");
-  std::string pass = co_await uv::fs::readAll(".irc-pass");
-
   ssl::openssl::driver opensslDriver;
   ssl::context sslContext{opensslDriver};
 
-  uv::tcp tcp;
-  tcp.useSSL(sslContext);
-  co_await tcp.connect("irc.chat.twitch.tv", "6697");
+  while (true) {
+    std::cout << "CONNECT" << std::endl;
 
-  co_await tcp.write(irc::out::auth(nick, pass));
-  // co_await tcp.write(irc::out::twitch::capreqMembership());
-  co_await tcp.write(irc::out::twitch::capreqTags());
-  co_await tcp.write(irc::out::twitch::capreqCommands());
-  co_await tcp.write(irc::out::join("pajlada"));
+    std::string nick = co_await uv::fs::readAll(".irc-nick");
+    std::string pass = co_await uv::fs::readAll(".irc-pass");
 
-  co_await tcp.readLinesAsViewsUntilEOF([&tcp](auto line) {
-    uv::startAsTask([&]() -> task<void> {
-      irc::message message = irc::parse(line);
+    uv::tcp tcp;
+    tcp.useSSL(sslContext);
+    co_await tcp.connect("irc.chat.twitch.tv", "6697");
 
-      switch (message.index()) {
-      case irc::index_v<irc::privmsg>: {
-        auto& privmsg = irc::get<irc::privmsg>(message);
+    co_await tcp.write(irc::out::auth(nick, pass));
+    // co_await tcp.write(irc::out::twitch::capreqMembership());
+    co_await tcp.write(irc::out::twitch::capreqTags());
+    co_await tcp.write(irc::out::twitch::capreqCommands());
+    co_await tcp.write(irc::out::join("pajlada"));
 
-        // std::cout << privmsg[irc::twitch::tags::DISPLAY_NAME] << ": " << privmsg.message() << std::endl;
+    co_await tcp.readLinesAsViewsUntilEOF([&tcp](auto line) {
+      uv::startAsTask([&]() -> task<void> {
+        irc::message message = irc::parse(line);
 
-        if (
-          privmsg.channel() == "pajlada" &&
-          privmsg.sender() == "pajbot" &&
-          privmsg.message().starts_with("pajaS 🚨 ALERT") &&
-          privmsg.action()
-        ) {
-          co_await tcp.write(irc::out::privmsg(privmsg.channel(), "/me FeelsDonkMan 🚨 TERROREM"));
+        switch (message.index()) {
+        case irc::index_v<irc::privmsg>: {
+          auto& privmsg = irc::get<irc::privmsg>(message);
+
+          std::cout << privmsg[irc::twitch::tags::DISPLAY_NAME] << ": " << privmsg.message() << std::endl;
+
+          if (
+            privmsg.channel() == "pajlada" &&
+            privmsg.sender() == "pajbot" &&
+            privmsg.message().starts_with("pajaS 🚨 ALERT") &&
+            privmsg.action()
+          ) {
+            co_await tcp.write(irc::out::privmsg(privmsg.channel(), "/me FeelsDonkMan 🚨 TERROREM"));
+          }
+        } break;
+
+        case irc::index_v<irc::ping>: {
+          auto& ping = irc::get<irc::ping>(message);
+
+          // std::cout << (std::string_view)ping << std::endl;
+          co_await tcp.write(irc::out::pong(ping.server()));
+        } break;
+
+        default: {
+          // std::cout << "<< " << irc::getAsString(message) << std::endl;
+        } break;
         }
-      } break;
-
-      case irc::index_v<irc::ping>: {
-        auto& ping = irc::get<irc::ping>(message);
-
-        // std::cout << (std::string_view)ping << std::endl;
-        co_await tcp.write(irc::out::pong(ping.server()));
-      } break;
-
-      default: {
-        // std::cout << "<< " << irc::getAsString(message) << std::endl;
-      } break;
-      }
+      });
     });
-  });
+  }
 
   // auto test = co_await uv::work::queue<int>([]() {
   //   return 123;

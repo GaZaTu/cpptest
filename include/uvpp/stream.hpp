@@ -175,7 +175,7 @@ public:
     auto data_ptr = getData<data>();
     if (!data_ptr->sent_eof) {
       data_ptr->sent_eof = true;
-      
+
       if (data_ptr->read_cb) {
         data_ptr->read_cb({}, uv::error{UV_EOF});
       }
