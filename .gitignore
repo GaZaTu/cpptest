@@ -1,0 +1,7 @@
+build
+
+.irc-nick
+.irc-pass
+bombardier
+server.crt
+server.key

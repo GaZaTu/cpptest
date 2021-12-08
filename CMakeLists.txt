@@ -1,0 +1,103 @@
+cmake_minimum_required(VERSION 3.3.0 FATAL_ERROR)
+project(cpptest VERSION 0.0.1 LANGUAGES CXX)
+
+set(PROJECT_ORGANIZATION gazatu.xyz)
+
+if (${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.12.0")
+  cmake_policy(SET CMP0074 NEW)
+endif ()
+
+add_definitions(
+  -DPROJECT_ORGANIZATION="${PROJECT_ORGANIZATION}"
+  -DPROJECT_NAME="${PROJECT_NAME}"
+  -DPROJECT_VERSION="${PROJECT_VERSION}"
+  # -DUVPP_NO_TASK=true
+  # -DSSLPP_NO_TASK=true
+)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
+
+find_library(UV_LIB uv REQUIRED)
+add_library(UV STATIC SHARED IMPORTED)
+set_target_properties(UV PROPERTIES
+  IMPORTED_LOCATION ${UV_LIB}
+)
+
+find_library(OPENSSL_LIB ssl REQUIRED)
+add_library(OPENSSL STATIC SHARED IMPORTED)
+set_target_properties(OPENSSL PROPERTIES
+  IMPORTED_LOCATION ${OPENSSL_LIB}
+)
+
+find_library(CRYPTO_LIB crypto REQUIRED)
+add_library(CRYPTO STATIC SHARED IMPORTED)
+set_target_properties(CRYPTO PROPERTIES
+  IMPORTED_LOCATION ${CRYPTO_LIB}
+)
+
+find_library(ZLIB_LIB z REQUIRED)
+add_library(ZLIB STATIC SHARED IMPORTED)
+set_target_properties(ZLIB PROPERTIES
+  IMPORTED_LOCATION ${ZLIB_LIB}
+)
+
+find_library(HTTPPARSER_LIB http_parser REQUIRED)
+add_library(HTTPPARSER STATIC SHARED IMPORTED)
+set_target_properties(HTTPPARSER PROPERTIES
+  IMPORTED_LOCATION ${HTTPPARSER_LIB}
+)
+
+find_library(NGHTTP2_LIB nghttp2 REQUIRED)
+add_library(NGHTTP2 STATIC SHARED IMPORTED)
+set_target_properties(NGHTTP2 PROPERTIES
+  IMPORTED_LOCATION ${NGHTTP2_LIB}
+)
+
+find_library(SQLITE3_LIB sqlite3 REQUIRED)
+add_library(SQLITE3 STATIC SHARED IMPORTED)
+set_target_properties(SQLITE3 PROPERTIES
+  IMPORTED_LOCATION ${SQLITE3_LIB}
+)
+
+include_directories(
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/include
+)
+
+set(COMMON_SRC_FILES
+  src/main.cpp
+)
+
+if (UNIX AND NOT APPLE) # LINUX
+  set(PLATFORM_SRC_FILES
+  )
+elseif (WIN32)
+  set(PLATFORM_SRC_FILES
+  )
+endif ()
+
+set(SRC_FILES
+  ${COMMON_SRC_FILES}
+  ${PLATFORM_SRC_FILES}
+)
+
+add_executable(${PROJECT_NAME} ${SRC_FILES})
+
+set_target_properties(${PROJECT_NAME} PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+)
+
+target_link_libraries(${PROJECT_NAME}
+  UV
+  OPENSSL
+  CRYPTO
+  ZLIB
+  HTTPPARSER
+  NGHTTP2
+  SQLITE3
+)
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -fcoroutines")

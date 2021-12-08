@@ -1,0 +1,109 @@
+#include <iostream>
+#include <coroutine>
+#include "coropp/resumable.hpp"
+#include "uv.hpp"
+#include "finally.hpp"
+
+/*
+resumable testResumable() {
+    Promise promise;
+    promise.get_return_object();
+    co_await promise.initial_suspend();
+    try {
+    // co-routine body
+    }
+    catch(...) {
+    promise.unhandled_exception();
+    }
+    final_suspend:
+    co_await promise.final_suspend();
+}
+*/
+
+future<void> testCoroResumable() {
+    std::cout << "Hello" << std::endl;
+    co_await std::suspend_always();
+    std::cout << "Hello again" << std::endl;
+    co_return;
+}
+
+future<const char*> testCoroResumableString() {
+    std::cout << "Hello" << std::endl;
+    co_await std::suspend_always();
+    co_return "testCoroResumableString";
+}
+
+// future<void> testManualResumable() {
+//     future<void>::promise_type promise;
+
+//     std::cout << "Hello" << std::endl;
+//     // co_await std::suspend_always();
+//     // co_return "Coroutine";
+
+//     return promise.get_awaitable();
+// }
+
+// future<const char*> testManualResumableString() {
+//     future<const char*>::promise_type promise;
+
+//     std::cout << "Hello" << std::endl;
+//     // co_await std::suspend_always();
+//     // co_return "Coroutine";
+// }
+
+template<typename T>
+void poll_future(future<T>& tsk, std::function<void()> cb) {
+    uv::check* check = new uv::check();
+
+    check->start([check, &tsk, cb]() {
+        std::cout << tsk.done() << std::endl;
+
+        if (!tsk.resume()) {
+            // auto finally = cppcoro::on_scope_exit([check]() {
+            //     delete check;
+            // });
+
+            finally f([check]() {
+                delete check;
+            });
+
+            cb();
+        }
+    });
+}
+
+int main() {
+    std::cout << "start" << std::endl;
+
+    future<void> res1 = testCoroResumable();
+
+    callback_wait(std::move(res1), []() {
+        std::cout << "callback_waitxd" << std::endl;
+    });
+
+    // future<void> res1 = testCoroResumable();
+    // while (res1.resume());
+    // res1.result();
+
+    // future<const char*> res2 = testCoroResumableString();
+    // // while (res2.resume());
+    // // std::cout << res2.result() << std::endl;
+
+    // // poll_future(res2, [&res2]() {
+    // //     std::cout << res2.result() << std::endl;
+    // // });
+
+    // // std::cout << "alive: " << uv_loop_alive(uv_default_loop()) << std::endl;
+
+    // while (true) {
+    //     res2.resume();
+
+    //     if (uv_run(uv_default_loop(), UV_RUN_NOWAIT) == 0) {
+    //         break;
+    //     }
+    // }
+
+    // std::cout << res2.result() << std::endl;
+
+    std::cout << "end" << std::endl;
+}
