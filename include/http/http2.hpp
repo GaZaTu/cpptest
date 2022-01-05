@@ -60,9 +60,9 @@ public:
             }
             if (header_name == ":path") {
               http::url path{header_value, http::url::IN};
-              handler->_result.url.path = std::move(path.path);
-              handler->_result.url.query = std::move(path.query);
-              handler->_result.url.fragment = std::move(path.fragment);
+              handler->_result.url.path(std::move(path.path()));
+              handler->_result.url.query(std::move(path.query()));
+              handler->_result.url.fragment(std::move(path.fragment()));
               return 0;
             }
           } else {
@@ -92,7 +92,33 @@ public:
       nghttp2_session_callbacks_set_on_frame_recv_callback(
           _callbacks, [](nghttp2_session* session, const nghttp2_frame* frame, void* user_data) {
             auto handler = (http2::handler<T>*)user_data;
-            handler->onStreamClose();
+
+            if constexpr (type == HTTP_REQUEST) {
+              // switch (frame->hd.type) {
+              // case NGHTTP2_DATA:
+              // case NGHTTP2_HEADERS: {
+              //   /* Check that the client request has finished */
+              //   if (frame->hd.flags & NGHTTP2_FLAG_END_STREAM) {
+              //     auto stream_data = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+              //     /* For DATA and HEADERS frame, this callback may be called after
+              //       on_stream_close_callback. Check that stream still alive. */
+              //     if (!stream_data) {
+              //       return 0;
+              //     }
+
+              //     http2_stream_data xd;
+
+              //     parser->_result.url = stream_data->request_path;
+
+              //     handler->onStreamClose();
+              //     return 0;
+              //   }
+              //   break;
+              // }
+              // }
+            } else {
+              handler->onStreamClose();
+            }
 
             return 0;
           });
@@ -125,6 +151,8 @@ public:
     if (rv < chunk.length()) {
       throw http::error{"unexpected"};
     }
+
+    sendSession();
   }
 
   void complete(std::function<void(T&)> on_complete) {
@@ -162,11 +190,11 @@ public:
     }
   }
 
-  void submitRequest(http::request& request) {
-    std::string method{request.methodAsString()};
-    std::string scheme{request.url.schema};
-    std::string authority{request.url.host};
-    std::string path{request.url.fullpath()};
+  void submitRequest(const http::request& request) {
+    std::string method = request.method;
+    std::string scheme = request.url.schema();
+    std::string authority = request.url.host();
+    std::string path = request.url.fullpath();
 
     short pseudo_headers_len = 4;
     size_t headers_len = pseudo_headers_len + request.headers.size();
@@ -188,7 +216,7 @@ public:
     }
   }
 
-  void submitResponse(http::response& response) {
+  void submitResponse(const http::response& response) {
     std::string status{std::to_string(response.status)};
 
     short pseudo_headers_len = 1;

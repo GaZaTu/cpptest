@@ -10,31 +10,32 @@
 
 namespace http {
 task<http::response> fetch(http::request& request) {
-  request.headers["host"] = request.url.host;
-  request.headers["connection"] = "close";
-  request.headers["accept-encoding"] = "gzip";
-
 #ifndef UVPP_NO_SSL
-  ssl::openssl::driver opensslDriver;
-  ssl::context sslContext{opensslDriver, ssl::CONNECT};
-  sslContext.useALPNProtocols({"h2", "http/1.1"});
+  ssl::openssl::driver openssl_driver;
+  ssl::context ssl_context{openssl_driver};
+  ssl_context.useALPNProtocols({"h2", "http/1.1"});
 #endif
 
   uv::tcp tcp;
 
-  if (request.url.schema == "https") {
+  if (request.url.schema() == "https") {
 #ifndef UVPP_NO_SSL
-    tcp.useSSL(sslContext);
+    tcp.useSSL(ssl_context);
+#else
+    throw std::runtime_error{"https support disabled"};
 #endif
   }
 
-  co_await tcp.connect(request.url.host, request.url.port);
+  co_await tcp.connect(request.url.host(), request.url.port());
+
+  request.headers["connection"] = "close";
+  request.headers["accept-encoding"] = "gzip";
 
   if (tcp.sslState().protocol() == "h2") {
     http2::handler<http::response> handler;
+
     handler.onSend([&](auto input) {
-      tcp.write((std::string)input, [](auto) {
-      });
+      tcp.write((std::string)input).start();
     });
     handler.complete([&](auto&) {
       uv::async::queue([&]() {
@@ -57,6 +58,8 @@ task<http::response> fetch(http::request& request) {
     co_return handler.result();
   } else {
     http::parser<http::response> parser;
+
+    request.headers["host"] = request.url.host();
 
     co_await tcp.write((std::string)request);
     co_await tcp.shutdown();

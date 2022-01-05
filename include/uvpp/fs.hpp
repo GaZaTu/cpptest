@@ -5,18 +5,39 @@
 #ifndef UVPP_NO_TASK
 #include "../task.hpp"
 #endif
-#include "finally.hpp"
 #include "uv.h"
 #include <functional>
 #include <string_view>
 
 namespace uv {
-using file = uv_file;
+struct file {
+public:
+  file(uv_file fd = 0, uv_loop_t* native_loop = uv_default_loop()) : _fd(fd), _native_loop(native_loop) {}
+
+  ~file();
+
+  file& operator=(uv_file fd) {
+    _fd = fd;
+    return *this;
+  }
+
+  operator uv_file() const {
+    return _fd;
+  }
+
+  operator bool() const {
+    return _fd;
+  }
+
+private:
+  uv_file _fd;
+  uv_loop_t* _native_loop;
+};
 
 namespace fs {
 using buf = uv_buf_t;
 
-void close(uv::file file, std::function<void()> cb, uv_loop_t* native_loop = uv_default_loop()) {
+void close(uv::file& file, std::function<void()> cb, uv_loop_t* native_loop = uv_default_loop()) {
   struct data_t : public uv::detail::req::data {
     std::function<void()> cb;
   };
@@ -33,11 +54,13 @@ void close(uv::file file, std::function<void()> cb, uv_loop_t* native_loop = uv_
 
     cb();
   }));
+
+  file = 0;
 }
 
 #ifndef UVPP_NO_TASK
-task<void> close(uv::file file, uv_loop_t* native_loop = uv_default_loop()) {
-  return task<void>::create([file, native_loop](auto& resolve, auto& reject) {
+task<void> close(uv::file& file, uv_loop_t* native_loop = uv_default_loop()) {
+  return task<void>::create([file, native_loop](auto& resolve, auto& reject) mutable {
     uv::fs::close(
         file,
         [&resolve, &reject]() {
@@ -48,18 +71,20 @@ task<void> close(uv::file file, uv_loop_t* native_loop = uv_default_loop()) {
 }
 #endif
 
-void open(const char* path, int flags, int mode, std::function<void(uv::file, uv::error)> cb,
+void open(std::string_view path, int flags, int mode, std::function<void(uv::file, uv::error)> cb,
     uv_loop_t* native_loop = uv_default_loop()) {
   struct data_t : public uv::detail::req::data {
     std::function<void(uv::file, uv::error)> cb;
+    std::string path;
   };
   using req_t = uv::req<uv_fs_t, data_t>;
 
   auto req = new req_t(&uv_fs_req_cleanup);
   auto data = req->dataPtr();
   data->cb = cb;
+  data->path = path;
 
-  error::test(uv_fs_open(native_loop, *req, path, flags, mode, [](uv_fs_t* req) {
+  error::test(uv_fs_open(native_loop, *req, data->path.data(), flags, mode, [](uv_fs_t* req) {
     auto data = req_t::dataPtr(req);
     auto cb = std::move(data->cb);
     delete data->req;
@@ -73,8 +98,8 @@ void open(const char* path, int flags, int mode, std::function<void(uv::file, uv
 }
 
 #ifndef UVPP_NO_TASK
-task<uv::file> open(const char* path, int flags, int mode, uv_loop_t* native_loop = uv_default_loop()) {
-  return task<uv::file>::create([path = std::string{path}, flags, mode, native_loop](auto& resolve, auto& reject) {
+task<uv::file> open(std::string_view path, int flags, int mode, uv_loop_t* native_loop = uv_default_loop()) {
+  return task<uv::file>::create([path, flags, mode, native_loop](auto& resolve, auto& reject) {
     uv::fs::open(
         path.data(), flags, mode,
         [&resolve, &reject](auto result, auto error) {
@@ -89,7 +114,7 @@ task<uv::file> open(const char* path, int flags, int mode, uv_loop_t* native_loo
 }
 #endif
 
-void read(uv::file file, std::function<void(std::string_view, uv::error)> cb, char* buf = nullptr, size_t buf_len = 0,
+void read(uv_file file, std::function<void(std::string_view, uv::error)> cb, char* buf = nullptr, size_t buf_len = 0,
     int64_t offset = 0, uv_loop_t* native_loop = uv_default_loop()) {
   struct data_t : public uv::detail::req::data {
     bool owns_buf;
@@ -134,7 +159,7 @@ void read(uv::file file, std::function<void(std::string_view, uv::error)> cb, ch
 }
 
 #ifndef UVPP_NO_TASK
-task<std::string_view> read(uv::file file, char* buf = nullptr, size_t buf_len = 0, int64_t offset = 0,
+task<std::string_view> read(uv_file file, char* buf = nullptr, size_t buf_len = 0, int64_t offset = 0,
     uv_loop_t* native_loop = uv_default_loop()) {
   return task<std::string_view>::create([file, buf, buf_len, offset, native_loop](auto& resolve, auto& reject) {
     uv::fs::read(
@@ -152,7 +177,7 @@ task<std::string_view> read(uv::file file, char* buf = nullptr, size_t buf_len =
 #endif
 
 #ifndef UVPP_NO_TASK
-task<std::string> readAll(uv::file file, int64_t offset = 0, uv_loop_t* native_loop = uv_default_loop()) {
+task<std::string> readAll(uv_file file, int64_t offset = 0, uv_loop_t* native_loop = uv_default_loop()) {
   std::string result;
 
   char buf[65536];
@@ -171,18 +196,20 @@ task<std::string> readAll(uv::file file, int64_t offset = 0, uv_loop_t* native_l
 #endif
 
 #ifndef UVPP_NO_TASK
-task<std::string> readAll(const char* path, int64_t offset = 0, uv_loop_t* native_loop = uv_default_loop()) {
+task<std::string> readAll(std::string_view path, int64_t offset = 0, uv_loop_t* native_loop = uv_default_loop()) {
   uv::file file = co_await uv::fs::open(path, O_RDONLY, S_IRUSR, native_loop);
-  finally f{[file, native_loop]() {
-    uv::fs::close(
-        file,
-        []() {
-        },
-        native_loop);
-  }};
+  // finally f{[file, native_loop]() {
+  //   uv::fs::close(file, []() {}, native_loop);
+  // }};
 
   co_return co_await uv::fs::readAll(file, offset, native_loop);
 }
 #endif
 } // namespace fs
+
+uv::file::~file() {
+  if (*this) {
+    uv::fs::close(*this, []() {}, _native_loop);
+  }
+}
 } // namespace uv

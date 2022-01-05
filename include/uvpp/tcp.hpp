@@ -186,7 +186,10 @@ private:
   std::function<void(uv::error)> hookSSLIntoStream(std::function<void(uv::error)>& cb) {
     _ssl_state.onReadDecrypted([this](auto data) {
       auto data_ptr = getData<uv::tcp::data>();
-      data_ptr->read_decrypted_cb(data, uv::error{0});
+
+      if (data_ptr->read_decrypted_cb) {
+        data_ptr->read_decrypted_cb(data, uv::error{0});
+      }
     });
 
     _ssl_state.onWriteEncrypted([this](auto&& input, auto cb) {

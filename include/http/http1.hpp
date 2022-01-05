@@ -17,8 +17,8 @@ public:
 
     if constexpr (type == HTTP_REQUEST) {
       _result.method = (http_method)-1;
-      _result.url.schema = "http";
-      _result.url.port = 80;
+      _result.url.schema("http");
+      _result.url.port(80);
     } else {
       _result.status = (http_status)-1;
     }

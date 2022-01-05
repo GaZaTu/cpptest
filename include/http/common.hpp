@@ -6,28 +6,67 @@
 #include <unordered_map>
 
 namespace http {
-enum method {
-  DELETE = HTTP_DELETE,
-  GET = HTTP_GET,
-  HEAD = HTTP_HEAD,
-  POST = HTTP_POST,
-  PUT = HTTP_PUT,
-  CONNECT = HTTP_CONNECT,
-  OPTIONS = HTTP_OPTIONS,
-  TRACE = HTTP_TRACE,
+struct method {
+public:
+  enum _enum {
+#define XX(num, name, string) name = HTTP_##name,
+    HTTP_METHOD_MAP(XX)
+#undef XX
+  };
+
+  method() = delete;
+
+  method(_enum value) : _value{value} {}
+
+  method(http_method value) : _value{(_enum)value} {}
+
+  operator http_method() const {
+    return (http_method)_value;
+  }
+
+  operator std::string() const {
+    return http_method_str(*this);
+  }
+
+private:
+  _enum _value;
+};
+
+struct status {
+public:
+  enum _enum {
+#define XX(num, name, string) name = HTTP_STATUS_##name,
+    HTTP_STATUS_MAP(XX)
+#undef XX
+  };
+
+  status() = delete;
+
+  status(_enum value) : _value{value} {}
+
+  status(http_status value) : _value{(_enum)value} {}
+
+  operator http_status() const {
+    return (http_status)_value;
+  }
+
+  operator std::string() const {
+    return http_status_str(*this);
+  }
+
+private:
+  _enum _value;
+};
+
+std::unordered_map<std::string_view, uint16_t> known_protocols = {
+  {"http", 80},
+  {"https", 443},
 };
 
 struct url {
 public:
   static constexpr bool IN = true;
   static constexpr bool OUT = false;
-
-  std::string schema = "http";
-  std::string host;
-  int16_t port = 80;
-  std::string path = "/";
-  std::string query;
-  std::string fragment;
 
   url() {
   }
@@ -45,19 +84,19 @@ public:
       }
     };
 
-    move(UF_SCHEMA, schema);
-    move(UF_HOST, host);
-    // move(UF_PORT, port);
-    move(UF_PATH, path);
-    move(UF_QUERY, query);
-    move(UF_FRAGMENT, fragment);
+    move(UF_SCHEMA, _schema);
+    move(UF_HOST, _host);
+    // move(UF_PORT, _port);
+    move(UF_PATH, _path);
+    move(UF_QUERY, _query);
+    move(UF_FRAGMENT, _fragment);
 
-    if (schema == "https") {
-      port = 443;
+    if (known_protocols.contains(_schema)) {
+      _port = known_protocols[_schema];
     }
 
     if (parser.port != 0) {
-      port = parser.port;
+      _port = parser.port;
     }
   }
 
@@ -72,15 +111,80 @@ public:
 
   url& operator=(url&&) = default;
 
-  std::string fullpath() const {
-    std::string result = path;
+  const std::string& schema() const {
+    return _schema;
+  }
 
-    if (query != "") {
-      result += "?" + query;
+  url& schema(std::string&& value) {
+    _schema = std::move(value);
+    return *this;
+  }
+
+  const std::string& host() const {
+    return _host;
+  }
+
+  url& host(std::string&& value) {
+    _host = std::move(value);
+    return *this;
+  }
+
+  uint16_t port() const {
+    return _port;
+  }
+
+  url& port(uint16_t value) {
+    _port = value;
+    return *this;
+  }
+
+  const std::string& path() const {
+    return _path;
+  }
+
+  url& path(std::string&& value) {
+    _path = std::move(value);
+    return *this;
+  }
+
+  const std::string& query() const {
+    return _query;
+  }
+
+  url& query(std::string&& value) {
+    _query = std::move(value);
+    return *this;
+  }
+
+  url& query(const std::unordered_map<std::string, std::string>& map) {
+    _query = "";
+    for (const auto& [key, value] : map) {
+      if (!_query.empty()) {
+        _query += '&';
+      }
+      _query += key + '=' + value;
+    }
+    return *this;
+  }
+
+  const std::string& fragment() const {
+    return _fragment;
+  }
+
+  url& fragment(std::string&& value) {
+    _fragment = std::move(value);
+    return *this;
+  }
+
+  std::string fullpath() const {
+    std::string result = _path;
+
+    if (_query != "") {
+      result += "?" + _query;
     }
 
-    if (fragment != "") {
-      result += "#" + fragment;
+    if (_fragment != "") {
+      result += "#" + _fragment;
     }
 
     return result;
@@ -89,11 +193,12 @@ public:
   explicit operator std::string() const {
     std::stringstream result;
 
-    if (host != "") {
-      result << schema << "://" << host;
+    if (_host != "") {
+      result << _schema << "://" << _host;
 
-      if ((schema == "http" && port != 80) || (schema == "https" && port != 443)) {
-        result << ":" << port;
+      auto protocol_port = known_protocols.find(_schema);
+      if (protocol_port == known_protocols.end() || _port != protocol_port->second) {
+        result << ":" << _port;
       }
     }
 
@@ -101,15 +206,23 @@ public:
 
     return result.str();
   }
+
+private:
+  std::string _schema = "http";
+  std::string _host;
+  uint16_t _port = known_protocols[_schema];
+  std::string _path = "/";
+  std::string _query;
+  std::string _fragment;
 };
 
 struct request {
 public:
-  std::tuple<unsigned short, unsigned short> version = {1, 1};
+  std::tuple<uint8_t, uint8_t> version = {1, 1};
 
   http::url url;
 
-  http_method method = HTTP_GET;
+  http::method method = http::method::GET;
 
   std::unordered_map<std::string, std::string> headers;
 
@@ -118,7 +231,7 @@ public:
   request() {
   }
 
-  request(http_method m, http::url u, std::string b = {}) : method(m), url(u), body(b) {
+  request(http::method m, http::url u, std::string b = {}) : method(m), url(u), body(b) {
   }
 
   request(http::url u) : url(u) {
@@ -128,18 +241,14 @@ public:
     return stringify(*this);
   }
 
-  std::string methodAsString() const {
-    return http_method_str((http_method)method);
-  }
-
 private:
   static std::string stringify(const request& r, const std::unordered_map<std::string, std::string>& headers = {}) {
     auto url = r.url;
-    url.host = "";
+    url.host("");
 
     std::stringstream result;
 
-    result << r.methodAsString() << " ";
+    result << (std::string)r.method << " ";
     result << (std::string)url << " ";
     result << "HTTP/" << std::get<0>(r.version) << "." << std::get<1>(r.version) << "\r\n";
 
@@ -163,9 +272,9 @@ private:
 
 struct response {
 public:
-  std::tuple<unsigned short, unsigned short> version = {1, 1};
+  std::tuple<uint8_t, uint8_t> version = {1, 1};
 
-  http_status status = HTTP_STATUS_OK;
+  http::status status = http::status::OK;
 
   std::unordered_map<std::string, std::string> headers;
 
@@ -176,7 +285,7 @@ public:
   response() {
   }
 
-  response(http_status s, std::string b = {}) : status(s), body(b) {
+  response(http::status s, std::string b = {}) : status(s), body(b) {
   }
 
   operator bool() const {
@@ -187,17 +296,13 @@ public:
     return stringify(*this);
   }
 
-  std::string statusAsString() const {
-    return http_status_str((http_status)status);
-  }
-
 private:
   static std::string stringify(const response& r, const std::unordered_map<std::string, std::string>& headers = {}) {
     std::stringstream result;
 
-    result << "HTTP/" << std::get<0>(r.version) << "." << std::get<1>(r.version) << " ";
-    result << r.status << " ";
-    result << r.statusAsString() << "\r\n";
+    result << "HTTP/" << (int)std::get<0>(r.version) << "." << (int)std::get<1>(r.version) << " ";
+    result << (int)r.status << " ";
+    result << (std::string)r.status << "\r\n";
 
     for (const auto& [key, value] : headers) {
       result << key << ": " << value << "\r\n";
@@ -225,7 +330,7 @@ public:
   error(unsigned int c = 0) : std::runtime_error(errno_string(c)) {
   }
 
-  error(const response& r) : std::runtime_error(std::to_string(r.status) + " " + r.statusAsString()) {
+  error(const response& r) : std::runtime_error(std::to_string(r.status) + " " + (std::string)r.status) {
   }
 
 private:

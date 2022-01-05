@@ -32,7 +32,8 @@ struct variant_get_index<T, std::variant<Ts...>>
     : std::integral_constant<size_t, std::variant<tag<Ts>...>(tag<T>()).index()> {};
 } // namespace detail
 
-using message = std::variant<unknown, privmsg, ping, clearchat, usernotice, /* userstate, */ roomstate, /* notice, */ reconnect>;
+using message =
+    std::variant<unknown, privmsg, ping, clearchat, usernotice, /* userstate, */ roomstate, /* notice, */ reconnect>;
 
 template <typename T>
 constexpr size_t index_v = detail::variant_get_index<T, message>::value;
@@ -47,7 +48,17 @@ constexpr const T& get(const message& m) {
   return std::get<index_v<T>>(m);
 }
 
-std::string_view getAsString(const message& m) {
+template <typename T>
+constexpr T* get_if(message& m) {
+  return std::get_if<index_v<T>>(&m);
+}
+
+template <typename T>
+constexpr const T* get_if(const message& m) {
+  return std::get_if<index_v<T>>(&m);
+}
+
+std::string_view stringify(const message& m) {
   std::string_view result;
 
   detail::constexpr_for<(size_t)0, std::variant_size_v<message>, (size_t)1>([&result, &m](auto i) {

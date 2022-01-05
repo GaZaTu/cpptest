@@ -90,7 +90,13 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
   CXX_EXTENSIONS OFF
 )
 
+include(cmake/CMakeRC.cmake)
+cmrc_add_resource_library(test-resources ALIAS res NAMESPACE res
+  src/res/sql/upgrades/v0001.sql
+)
+
 target_link_libraries(${PROJECT_NAME}
+  res
   UV
   OPENSSL
   CRYPTO

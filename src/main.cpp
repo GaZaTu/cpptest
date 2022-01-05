@@ -1,55 +1,426 @@
+// #define UVPP_PERF 1
+
 #include "http.hpp"
-#include "irc.hpp"
-#include "irc/twitch.hpp"
-#include "ssl-openssl.hpp"
+#include "twitchircbot.hpp"
 #include "uv.hpp"
+#include "db.hpp"
+#include "db-sqlite.hpp"
+#include "ulid_uint128.hh"
 #include <iostream>
+#include <regex>
+#include "json.hpp"
+#include "finally.hpp"
 
-// https://github.com/nghttp2/nghttp2
-// https://nghttp2.org/documentation/tutorial-client.html
+#include <cmrc/cmrc.hpp>
+CMRC_DECLARE(res);
 
-task<void> noop() {
-  return {};
+template<typename ...Args>
+std::string string_format(const std::string& format, Args... args) {
+  int size_s = std::snprintf(nullptr, 0, format.c_str(), args...) + 1; // Extra space for '\0'
+  if (size_s <= 0) { throw std::runtime_error("Error during formatting."); }
+  auto size = static_cast<size_t>(size_s);
+  auto buf = std::make_unique<char[]>(size);
+  std::snprintf(buf.get(), size, format.c_str(), args...);
+  return std::string(buf.get(), buf.get() + size - 1); // We don't want the '\0' inside
 }
 
-task<void> xdxd(int i) {
-  auto test = co_await uv::work::queue<int>([]() {
-    return 123;
+std::size_t string_replace_all(std::string& inout, std::string_view what, std::string_view with) {
+  std::size_t count{};
+  for (std::string::size_type pos{};
+      inout.npos != (pos = inout.find(what.data(), pos, what.length()));
+      pos += with.length(), ++count) {
+    inout.replace(pos, what.length(), with.data(), with.length());
+  }
+  return count;
+}
+
+std::size_t string_remove_all(std::string& inout, std::string_view what) {
+  return string_replace_all(inout, what, "");
+}
+
+std::string expand_macros(std::istream& in, const std::unordered_map<std::string, std::string>& defines) {
+  std::string_view IFDEF = "--#ifdef";
+  std::string_view ELIF = "--#elif";
+  std::string_view ELSE = "--#else";
+  std::string_view ENDIF = "--#endif";
+
+  std::string result;
+
+  int ifdef_depth = 0;
+  bool ifdef_valid = true;
+  bool ifdef_was_valid = false;
+
+  for (std::string line; std::getline(in, line, '\n'); ) {
+    const auto lineStartsWith = [&line](std::string_view keyword) {
+      return line.length() >= keyword.length() && line.substr(0, keyword.length()) == keyword;
+    };
+
+    if (line.empty()) {
+      result += '\n';
+    } else if (lineStartsWith(IFDEF)) {
+      ifdef_depth += 1;
+      ifdef_valid = defines.count(line.substr(IFDEF.length() + 1)) != 0;
+    } else if (lineStartsWith(ELIF)) {
+      if (ifdef_depth > 0 && !ifdef_valid && !ifdef_was_valid) {
+        ifdef_valid = defines.count(line.substr(ELIF.length() + 1)) != 0;
+      } else {
+        ifdef_valid = false;
+        ifdef_was_valid = true;
+      }
+    } else if (lineStartsWith(ELSE)) {
+      if (ifdef_depth > 0 && !ifdef_valid && !ifdef_was_valid) {
+        ifdef_valid = true;
+      } else {
+        ifdef_valid = false;
+        ifdef_was_valid = true;
+      }
+    } else if (lineStartsWith(ENDIF)) {
+      ifdef_depth -= 1;
+      ifdef_valid = true;
+      ifdef_was_valid = false;
+    } else if (ifdef_valid) {
+      result += line + '\n';
+    }
+  }
+
+  return result;
+}
+
+std::string expand_macros(std::string_view in, const std::unordered_map<std::string, std::string>& defines) {
+  std::stringstream stream{std::string{in}};
+  return expand_macros(stream, defines);
+}
+
+void registerDatabaseUpgradeScripts(db::datasource& datasource) {
+  for (auto entry : cmrc::res::get_filesystem().iterate_directory("src/res/sql/upgrades")) {
+    auto filename = entry.filename();
+    auto version = std::stoi(filename.substr(1, 4));
+
+    datasource.updates().push_back({version,
+        [path{"src/res/sql/upgrades/" + filename}](db::connection& connection) {
+          auto file = cmrc::res::get_filesystem().open(path);
+          auto script = std::string{file.begin(), file.size()};
+
+          connection.execute(script);
+        },
+        [path{"src/res/sql/downgrades/" + filename}](db::connection& connection) {
+          auto file = cmrc::res::get_filesystem().open(path);
+          auto script = std::string{file.begin(), file.size()};
+
+          connection.execute(script);
+        }});
+  }
+}
+
+void handleConnectionCreate(db::connection& conn) {
+  conn.execute("PRAGMA journal_mode = WAL");
+  conn.execute("PRAGMA synchronous = normal");
+  conn.execute("PRAGMA temp_store = memory");
+  conn.execute("PRAGMA mmap_size = 268435456");
+  conn.execute("PRAGMA cache_size = -10000");
+  conn.execute("PRAGMA foreign_keys = ON");
+
+  db::sqlite::createScalarFunction(conn, "create_iso_timestamp_triggers", [](sqlite3* _conn, sqlite3_context* context, int argc, sqlite3_value** argv) {
+    auto conn = db::sqlite::convertConnection(_conn);
+    auto table = db::sqlite::getString(argv[0]);
+    auto column = db::sqlite::getString(argv[1]);
+
+    std::string script = R"~(
+CREATE TRIGGER "trg_${TABLE}_after_insert_of_${COLUMN}_fix_iso_timestamp" AFTER INSERT ON "${TABLE}"
+BEGIN
+UPDATE "${TABLE}"
+SET "${COLUMN}" = strftime('%Y-%m-%dT%H:%M:%fZ', NEW."${COLUMN}")
+WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER "trg_${TABLE}_after_update_of_${COLUMN}_fix_iso_timestamp" AFTER UPDATE OF "${COLUMN}" ON "${TABLE}"
+WHEN NEW."${COLUMN}" IS NOT OLD."${COLUMN}"
+BEGIN
+UPDATE "${TABLE}"
+SET "${COLUMN}" = strftime('%Y-%m-%dT%H:%M:%fZ', NEW."${COLUMN}")
+WHERE rowid = NEW.rowid;
+END;
+    )~";
+
+    string_replace_all(script, "${TABLE}", table);
+    string_replace_all(script, "${COLUMN}", column);
+
+    conn.execute(script);
   });
 
-  throw 123;
+  db::transaction transaction{conn};
+  conn.execute("PRAGMA defer_foreign_keys = ON");
+  conn.upgrade();
+}
 
-  std::cout << co_await uv::fs::readAll(".editorconfig") << std::endl << test << i << std::endl;
+namespace db::orm {
+template <>
+struct idmeta<ulid::ULID> {
+  static constexpr bool specialized = true;
+
+  static ulid::ULID null() {
+    return 0;
+  }
+
+  static ulid::ULID generate() {
+    return ulid::CreateNowRand();
+  }
+
+  static std::string toString(ulid::ULID value) {
+    return ulid::Marshal(value);
+  }
+
+  static ulid::ULID fromString(const std::string& string) {
+    return ulid::Unmarshal(string);
+  }
+};
+}
+
+std::ostream& operator<<(std::ostream& os, ulid::ULID v) {
+  os << ulid::Marshal(v);
+
+  return os;
+}
+
+// #define DB_ORM_N_TO_1_REL(TYPE, NAME)                                           \
+//   auto NAME(db::orm::repository& repo) const {                                            \
+//     return repo.findOneById<TYPE>({NAME##_id}).value_or(TYPE{});         \
+//   }
+
+// #define DB_ORM_REL(TYPE, NAME)                                           \
+//   TYPE NAME;\
+//   std::conditional_t<db::orm::field_type_converter<TYPE>::optional, std::tuple_element_t<0, typename db::orm::primary<typename db::orm::field_type_converter<TYPE>::decayed>::tuple_type>, std::tuple_element_t<0, typename db::orm::primary<TYPE>::tuple_type>> NAME##_id;
+
+// namespace db::orm {
+// template <typename T, const char* F, typename R>
+// struct foreign {};
+// }
+
+
+// #define DB_ORM_FOREIGN_KEY(TYPE, FIELD, REFERENCES, REF_FIELD) \
+//   namespace db::orm {\
+//   struct foreign<TYPE, #FIELD, REFERENCES> {\
+//   };\
+//   \
+//   }
+
+struct TwitchUser {
+  std::string id = "";
+  std::string name = "";
+
+  operator bool() {
+    return id != "";
+  }
+};
+
+DB_ORM_SPECIALIZE(TwitchUser, id, name);
+DB_ORM_PRIMARY_KEY(TwitchUser, id);
+
+struct Counter {
+  ulid::ULID id = 0;
+  std::string twitch_user_id = "";
+  int64_t i = 0;
+
+  operator bool() {
+    return id != 0;
+  }
+};
+
+DB_ORM_SPECIALIZE(Counter, id, twitch_user_id, i);
+DB_ORM_PRIMARY_KEY(Counter, id);
+// DB_ORM_FOREIGN_KEY(Counter, twitch_user_id, TwitchUser, id);
+
+// using lmao = db::orm::foreign<Counter, "", TwitchUser>;
+
+// #define findOneByFk(REPO, OBJ, FK) REPO.findOneById<TYPE>({OBJ.FK}).value_or(TYPE{});
+
+using json = nlohmann::json;
+
+namespace nlohmann {
+template <typename T>
+struct adl_serializer<std::optional<T>> {
+  static void to_json(json& j, const std::optional<T>& opt) {
+    if (opt) {
+      j = *opt;
+    } else {
+      j = nullptr;
+    }
+  }
+
+  static void from_json(const json& j, std::optional<T>& opt) {
+    if (!j.is_null()) {
+      opt = j.get<T>();
+    } else {
+      opt = std::nullopt;
+    }
+  }
+};
+}
+
+namespace trivia {
+struct Question {
+  std::string category;
+  std::string question;
+  std::string answer;
+  std::optional<std::string> hint1;
+  std::optional<std::string> hint2;
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Question, category, question, answer, hint1, hint2);
+
+task<std::vector<Question>> getGazatuXyzQuestions(std::string_view count = "0", std::string_view config = "") {
+  http::url url{"https://api.gazatu.xyz/trivia/questions"};
+  url.query({
+    {"verified", "true"},
+    {"count", (std::string)count},
+  });
+  if (!config.empty()) {
+    url.query(url.query() + std::string{"&"} + (std::string)config);
+  }
+
+  auto response = co_await http::fetch(url);
+  std::cout << (std::string)response << std::endl;
+
+  auto json = json::parse(response.body);
+
+  co_return json;
+}
+
+struct {
+  bool stopped = true;
+  bool running = false;
+} state;
+
+task<void> run(irc::twitch::bot& bot, const irc::privmsg& privmsg, std::cmatch&& match) {
+  if (match.str(1) == "stop") {
+    state.stopped = true;
+    co_return;
+  }
+
+  if (state.running) {
+    co_return;
+  }
+
+  state.running = true;
+  state.stopped = false;
+
+  finally cleanup{[&]() {
+    state.running = false;
+    bot.send(privmsg, "trivia ended nam").start();
+  }};
+
+  auto questions = co_await trivia::getGazatuXyzQuestions("3");
+
+  for (int i = 0; i < questions.size(); i++) {
+    auto& question = questions[i];
+
+    if (!question.hint1) {
+      question.hint1 = "";
+
+      for (int i = 0; i < question.answer.length(); i++) {
+        if (question.answer[i] == ' ') {
+          *question.hint1 += question.answer[i];
+        } else {
+          *question.hint1 += "_";
+        }
+      }
+    }
+
+    if (!question.hint2) {
+      question.hint2 = "";
+
+      for (int i = 0; i < question.answer.length(); i++) {
+        if (question.answer[i] == ' ' || i < (question.answer.length() * 0.5)) {
+          *question.hint2 += question.answer[i];
+        } else {
+          *question.hint2 += "_";
+        }
+      }
+    }
+
+    if (!state.running || state.stopped) {
+      break;
+    }
+
+    co_await bot.send(privmsg, string_format("%d/%d category: %s 🤔 question: %s", i + 1, questions.size(), question.category.data(), question.question.data()));
+
+    uv::timer timer1;
+    uv::timer timer2;
+    uv::timer timer3;
+
+    timer1.startOnce(15000, [&]() {
+      bot.send(privmsg, string_format("trivia hint %s", question.hint1->data()));
+    });
+
+    timer2.startOnce(30000, [&]() {
+      bot.send(privmsg, string_format("trivia hint %s", question.hint2->data()));
+    });
+
+    std::function<void(const irc::privmsg&)> onmsg;
+
+    auto done = task<>::create([&](auto& resolve, auto& reject) {
+      timer3.startOnce(45000, [&]() {
+        bot.send(privmsg, string_format("you guys suck 🤣 the answer was: `%s`", question.answer.data()));
+        resolve();
+      });
+
+      onmsg = [&](auto& answer) {
+        if (answer.channel() != privmsg.channel()) {
+          return;
+        }
+
+        auto similarity = 0;
+        if (similarity < 0.9) {
+          return;
+        }
+
+        timer1.stop();
+        timer2.stop();
+        timer3.stop();
+
+        bot.send(privmsg, string_format("%s got it right miniDank the answer was \"%s\"", answer.sender().data(), question.answer.data())).start();
+
+        resolve();
+      };
+    });
+
+    bot.handle<irc::privmsg>(onmsg);
+
+    co_await done;
+    // TODO
+  }
+}
 }
 
 task<void> amain() {
-  // auto start = uv::hrtime();
 
-  // // http::request request;
-  // // request.url = "http://www.google.com";
+  co_return;
 
-  // http::response response = co_await http::fetch("https://api.gazatu.xyz");
-  // if (!response) {
-  //   // throw http::error{response};
-  // }
+  using namespace db::orm::literals;
+  using db::orm::fields;
 
-  // // std::cout << (std::string)request << std::endl;
-  // std::cout << (std::string)response << std::endl;
+  ssl::openssl::driver openssl_driver;
+  ssl::context ssl_context{openssl_driver};
 
-  // auto end = uv::hrtime();
+  db::sqlite::pooled::datasource datasource{".db"};
+  registerDatabaseUpgradeScripts(datasource);
 
-  // std::cout << "request done: " << ((end - start) * 1e-6) << " ms" << std::endl;
+  datasource.onConnectionCreate() = [](db::connection& conn) {
+    std::cout << "onConnectionCreate" << std::endl;
+    conn.profile(std::cout);
 
-  // co_return;
+    handleConnectionCreate(conn);
+  };
 
-  // xdxd(42).start(uv::deleteTask);
+  datasource.onConnectionOpen() = [](db::connection& conn) {
+    std::cout << "onConnectionOpen" << std::endl;
+  };
 
-  // co_await noop();
+  datasource.onConnectionClose() = [](db::connection& conn) {
+    std::cout << "onConnectionClose" << std::endl;
 
-  // std::cout << co_await task<int>::resolve(121212) << std::endl;
-
-  ssl::openssl::driver opensslDriver;
-  ssl::context sslContext{opensslDriver};
+    conn.execute("PRAGMA optimize");
+  };
 
   while (true) {
     std::cout << "CONNECT" << std::endl;
@@ -57,61 +428,120 @@ task<void> amain() {
     std::string nick = co_await uv::fs::readAll(".irc-nick");
     std::string pass = co_await uv::fs::readAll(".irc-pass");
 
-    uv::tcp tcp;
-    tcp.useSSL(sslContext);
-    co_await tcp.connect("irc.chat.twitch.tv", "6697");
+    irc::twitch::bot bot;
+    bot.useSSL(ssl_context);
 
-    co_await tcp.write(irc::out::auth(nick, pass));
-    // co_await tcp.write(irc::out::twitch::capreqMembership());
-    co_await tcp.write(irc::out::twitch::capreqTags());
-    co_await tcp.write(irc::out::twitch::capreqCommands());
-    co_await tcp.write(irc::out::join("pajlada"));
+    co_await bot.connect();
+    co_await bot.auth(nick, pass);
+    co_await bot.capreq(irc::out::twitch::cap::TAGS);
+    co_await bot.capreq(irc::out::twitch::cap::COMMANDS);
+    co_await bot.join("pajlada");
 
-    co_await tcp.readLinesAsViewsUntilEOF([&tcp](auto line) {
-      uv::startAsTask([&]() -> task<void> {
-        irc::message message = irc::parse(line);
+    bot.handle<irc::privmsg>([&](const irc::privmsg& privmsg) {
+      if (privmsg.sender() != "pajbot" || !privmsg.message().starts_with("pajaS 🚨 ALERT")) {
+        return;
+      }
 
-        switch (message.index()) {
-        case irc::index_v<irc::privmsg>: {
-          auto& privmsg = irc::get<irc::privmsg>(message);
-
-          std::cout << privmsg[irc::twitch::tags::DISPLAY_NAME] << ": " << privmsg.message() << std::endl;
-
-          if (
-            privmsg.channel() == "pajlada" &&
-            privmsg.sender() == "pajbot" &&
-            privmsg.message().starts_with("pajaS 🚨 ALERT") &&
-            privmsg.action()
-          ) {
-            co_await tcp.write(irc::out::privmsg(privmsg.channel(), "/me FeelsDonkMan 🚨 TERROREM"));
-          }
-        } break;
-
-        case irc::index_v<irc::ping>: {
-          auto& ping = irc::get<irc::ping>(message);
-
-          // std::cout << (std::string_view)ping << std::endl;
-          co_await tcp.write(irc::out::pong(ping.server()));
-        } break;
-
-        default: {
-          // std::cout << "<< " << irc::getAsString(message) << std::endl;
-        } break;
-        }
-      });
+      bot.send(privmsg, "/me FeelsDonkMan 🚨 TERROREM").start();
     });
+
+    // bot.command(std::regex{R"~(^pajaS 🚨 ALERT)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+    //   if (privmsg.sender() != "pajbot") {
+    //     return;
+    //   }
+
+    //   bot.send(privmsg, match.str(1)).start();
+    // });
+
+    bot.command(std::regex{R"~(^!vhns\s+is\s+(.*))~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+      bot.send(privmsg, match.str(1)).start();
+    });
+
+    bot.command(std::regex{R"~(^!i\+\+)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+      db::orm::repository repo{datasource};
+
+      auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
+
+      auto counter = repo
+        .select<Counter>()
+        .where(
+          fields<Counter>::twitch_user_id == twitch_user_id
+        )
+        .findOne()
+        .value_or(Counter{
+          .twitch_user_id = twitch_user_id,
+        });
+
+      auto i = counter.i++;
+
+      repo.save(counter);
+      std::cout << "id: " << counter.id << std::endl;
+
+      // auto twitch_user = counter.twitch_user(repo);
+      // if (!twitch_user) {
+      //   twitch_user.name = privmsg.sender();
+      //   repo.save(twitch_user);
+      // }
+
+      bot.reply(privmsg, std::to_string(i)).start();
+    });
+
+    bot.command(std::regex{R"~(^!idel)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+      db::orm::repository repo{datasource};
+
+      auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
+
+      auto counter = repo.select<Counter>()
+        .where(
+          fields<Counter>::twitch_user_id == twitch_user_id
+        )
+        .findOne()
+        .value_or(Counter{});
+
+      std::cout << "id: " << counter.id << std::endl;
+      repo.remove(counter);
+
+      auto i = counter.i;
+
+      bot.reply(privmsg, std::to_string(i)).start();
+    });
+
+    bot.command(std::regex{R"~(^!i\=(\d+))~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+      db::orm::repository repo{datasource};
+
+      auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
+
+      auto counter = repo.select<Counter>()
+        .where(
+          fields<Counter>::twitch_user_id == twitch_user_id
+        )
+        .findOne()
+        .value_or(Counter{
+          .twitch_user_id = twitch_user_id,
+        });
+
+      try {
+        counter.i = std::stoll(match.str(1));
+      } catch (...) {
+        bot.reply(privmsg, "fdm").start();
+        return;
+      }
+
+      auto i = counter.i;
+
+      repo.save(counter);
+      std::cout << "id: " << counter.id << std::endl;
+
+      bot.reply(privmsg, std::to_string(i)).start();
+    });
+
+    co_await bot.readMessagesUntilEOF();
   }
-
-  // auto test = co_await uv::work::queue<int>([]() {
-  //   return 123;
-  // });
-
-  // std::cout << co_await uv::fs::readAll(".editorconfig") << std::endl << test << std::endl;
 
   // uv::tty ttyin(uv::tty::STDIN);
   // uv::tty ttyout(uv::tty::STDOUT);
   // co_await ttyin.readLinesAsViewsUntilEOF([&](auto line) {
-  //   uv::startAsTask([&]() -> task<void> {
+  //   task<>::run([&]() -> task<void> {
   //     auto start = uv::hrtime();
 
   //     http::response response = co_await http::fetch(line);
@@ -129,22 +559,26 @@ task<void> amain() {
 }
 
 int main() {
-  // ssl::openssl::driver opensslDriver;
-  // ssl::context sslContext{opensslDriver, ssl::ACCEPT};
-  // sslContext.usePrivateKeyFile("server.key");
-  // sslContext.useCertificateFile("server.crt");
-  // sslContext.useALPNCallback({"http/1.1"});
+  // ssl::openssl::driver openssl_driver;
+  // ssl::context ssl_context{openssl_driver, ssl::ACCEPT};
+  // ssl_context.usePrivateKeyFile("server.key");
+  // ssl_context.useCertificateFile("server.crt");
+  // ssl_context.useALPNCallback({"h2", "http/1.1"});
 
   // uv::tcp server;
-  // server.useSSL(sslContext);
+  // server.useSSL(ssl_context);
   // server.bind4("127.0.0.1", 8001);
   // server.listen([&](auto error) {
-  //   uv::startAsTask([&]() -> task<void> {
+  //   task<>::run([&]() -> task<void> {
   //     uv::tcp client;
   //     co_await server.accept(client);
 
   //     if (client.sslState().protocol() == "h2") {
   //       http2::handler<http::request> handler;
+
+  //       handler.onSend([&](auto input) {
+  //         client.write((std::string)input).start();
+  //       });
 
   //       client.readStart([&](auto chunk, auto error) {
   //         if (error) {
@@ -156,7 +590,7 @@ int main() {
 
   //       http::request request = co_await handler.complete();
   //       if (!handler) {
-  //         throw http::error{"unexpected EOF"};
+  //         // throw http::error{"unexpected EOF"};
   //       }
 
   //       std::cout << (std::string)request << std::endl;
@@ -197,7 +631,7 @@ int main() {
   // });
 
   auto amain_task = amain();
-  amain_task.start();
+  amain_task.start_owned();
 
   uv::run();
 
@@ -207,52 +641,3 @@ int main() {
 
   return 0;
 }
-
-// int main() {
-//   db::sqlite::datasource datasource(":memory:");
-
-//   datasource.onConnectionOpen([](db::connection& connection) {
-//     try {
-//       db::transaction transaction(connection);
-
-//       connection.execute("CREATE TABLE Test (firstname, lastname, age)");
-//       connection.execute("INSERT INTO Test (firstname, lastname, age) VALUES ('firstname1', 'lastname1', 12)");
-//     } catch (...) {
-//       throw;
-//     }
-//   });
-
-//   datasource.onConnectionClose([](db::connection& connection) {
-//     connection.execute("PRAGMA optimize");
-//   });
-
-//   try {
-//     db::connection connection(&datasource);
-//     db::statement statement(connection);
-
-//     statement.prepare(
-//         "SELECT age, lastname FROM Test WHERE age >= :minAge AND lastname = :lastname AND :ignore IS NULL");
-//     statement.params[":minAge"] = 12;
-//     statement.params[":lastname"] = "lastname1";
-//     statement.params[":ignore"] = std::nullopt;
-
-//     for (db::resultset& result : statement.execute()) {
-//       std::optional<int> age = result["age"];
-//       std::optional<std::string> lastname = result["lastname"];
-
-//       std::cout << "age = " << age.value_or(-1) << std::endl;
-//       std::cout << "lastname = " << lastname.value_or("null") << std::endl;
-
-//       for (const std::string& col : result.columns()) {
-//         std::cout << "col -> " << col << std::endl;
-//       }
-//     }
-
-//     statement.prepare("SELECT 3");
-//     std::cout << "main::executeAndGetSingle = " << statement.executeAndGetSingle<int>().value() << std::endl;
-//   } catch (...) {
-//     throw;
-//   }
-
-//   return 0;
-// }

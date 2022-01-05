@@ -94,6 +94,10 @@
     "csignal": "cpp",
     "any": "cpp",
     "numbers": "cpp",
-    "semaphore": "cpp"
-  }
+    "semaphore": "cpp",
+    "queue": "cpp",
+    "forward_list": "cpp",
+    "valarray": "cpp"
+  },
+  "clang-tidy.buildPath": "build"
 }

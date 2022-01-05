@@ -45,6 +45,14 @@ public:
     return _action;
   }
 
+  // std::unordered_map<std::string_view, std::string_view>& tags() {
+  //   return _tags;
+  // }
+
+  const std::unordered_map<std::string_view, std::string_view>& tags() const {
+    return _tags;
+  }
+
   std::string_view operator[](std::string_view key) const {
     return _tags.at(key);
   }

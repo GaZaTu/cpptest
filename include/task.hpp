@@ -5,10 +5,31 @@
 #include <optional>
 #include <variant>
 #include <iostream>
+#include <queue>
+#include <mutex>
+#include <shared_mutex>
 
 #include "cppcoro/async_manual_reset_event.hpp"
 
 namespace taskpp {
+namespace detail {
+std::queue<std::function<void()>> completed_tasks;
+std::shared_mutex completed_tasks_rwlock;
+
+void deleteTask(std::function<void()> deleter) {
+  std::unique_lock lock(detail::completed_tasks_rwlock);
+
+  while (!detail::completed_tasks.empty()) {
+    auto& existing_deleter = detail::completed_tasks.front();
+
+    existing_deleter();
+    detail::completed_tasks.pop();
+  }
+
+  detail::completed_tasks.push(std::move(deleter));
+}
+}
+
 template <typename T = void>
 struct [[nodiscard]] task {
   using value_type = std::conditional_t<std::is_same_v<T, void>, std::nullopt_t, T>;
@@ -190,7 +211,7 @@ struct [[nodiscard]] task {
     _handle.resume();
   }
 
-  void start() {
+  void start_owned() {
     await_suspend(std::noop_coroutine());
   }
 
@@ -204,9 +225,13 @@ struct [[nodiscard]] task {
         try {
           co_await state->self;
         } catch (const std::exception& error) {
+#ifdef _GLIBCXX_IOSTREAM
           std::cerr << "unhandled task exception: " << typeid(error).name() << ": " << error.what() << std::endl;
+#endif
         } catch (...) {
+#ifdef _GLIBCXX_IOSTREAM
           std::cerr << "unhandled task error" << std::endl;
+#endif
         }
 
         state->queue_delete([state]() {
@@ -220,7 +245,11 @@ struct [[nodiscard]] task {
     state->self = std::move(*this);
     state->deleter = state_t::await_and_delete(state);
 
-    state->deleter.start();
+    state->deleter.start_owned();
+  }
+
+  void start() {
+    start(&detail::deleteTask);
   }
 
   bool done() {
@@ -241,6 +270,11 @@ struct [[nodiscard]] task {
     }
 
     return _handle.promise().unpack();
+  }
+
+  template <typename F>
+  static void run(F&& taskfn) {
+    taskfn().start();
   }
 
   using resolver_movable_param = std::function<void(value_type&)>;
@@ -309,7 +343,7 @@ struct [[nodiscard]] task {
     });
   }
 
-  task<void> then(resolver then, rejecter fail) {
+  task<void> then(resolver then, rejecter fail = [](auto) {}) {
     try {
       then(co_await *this);
     } catch (...) {

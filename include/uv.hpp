@@ -6,6 +6,7 @@
 #include "./uvpp/error.hpp"
 #include "./uvpp/fs.hpp"
 #include "./uvpp/handle.hpp"
+#include "./uvpp/lib.hpp"
 #include "./uvpp/loop.hpp"
 #include "./uvpp/misc.hpp"
 #include "./uvpp/req.hpp"
@@ -16,19 +17,19 @@
 #include "./uvpp/tty.hpp"
 #include "./uvpp/work.hpp"
 
-#ifndef UVPP_NO_TASK
-namespace uv {
-void deleteTask(std::function<void()> deleter) {
-  uv::async::queue(deleter);
-}
+// #ifndef UVPP_NO_TASK
+// namespace uv {
+// void deleteTask(std::function<void()> deleter) {
+//   uv::async::queue(deleter);
+// }
 
-void startTask(task<void>& task) {
-  task.start(deleteTask);
-}
+// void startTask(task<void>& task) {
+//   task.start(deleteTask);
+// }
 
-template <typename F>
-void startAsTask(F&& taskfn) {
-  taskfn().start(deleteTask);
-}
-} // namespace uv
-#endif
+// template <typename F>
+// void startAsTask(F&& taskfn) {
+//   taskfn().start(deleteTask);
+// }
+// } // namespace uv
+// #endif
