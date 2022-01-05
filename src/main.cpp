@@ -182,58 +182,17 @@ std::ostream& operator<<(std::ostream& os, ulid::ULID v) {
   return os;
 }
 
-// #define DB_ORM_N_TO_1_REL(TYPE, NAME)                                           \
-//   auto NAME(db::orm::repository& repo) const {                                            \
-//     return repo.findOneById<TYPE>({NAME##_id}).value_or(TYPE{});         \
+// struct TwitchUser {
+//   std::string id = "";
+//   std::string name = "";
+
+//   operator bool() {
+//     return id != "";
 //   }
+// };
 
-// #define DB_ORM_REL(TYPE, NAME)                                           \
-//   TYPE NAME;\
-//   std::conditional_t<db::orm::field_type_converter<TYPE>::optional, std::tuple_element_t<0, typename db::orm::primary<typename db::orm::field_type_converter<TYPE>::decayed>::tuple_type>, std::tuple_element_t<0, typename db::orm::primary<TYPE>::tuple_type>> NAME##_id;
-
-// namespace db::orm {
-// template <typename T, const char* F, typename R>
-// struct foreign {};
-// }
-
-
-// #define DB_ORM_FOREIGN_KEY(TYPE, FIELD, REFERENCES, REF_FIELD) \
-//   namespace db::orm {\
-//   struct foreign<TYPE, #FIELD, REFERENCES> {\
-//   };\
-//   \
-//   }
-
-struct TwitchUser {
-  std::string id = "";
-  std::string name = "";
-
-  operator bool() {
-    return id != "";
-  }
-};
-
-DB_ORM_SPECIALIZE(TwitchUser, id, name);
-DB_ORM_PRIMARY_KEY(TwitchUser, id);
-
-struct Counter {
-  ulid::ULID id = 0;
-  std::string twitch_user_id = "";
-  int64_t i = 0;
-
-  operator bool() {
-    return id != 0;
-  }
-};
-
-DB_ORM_SPECIALIZE(Counter, id, twitch_user_id, i);
-DB_ORM_PRIMARY_KEY(Counter, id);
-// DB_ORM_FOREIGN_KEY(Counter, twitch_user_id, TwitchUser, id);
-
-// using lmao = db::orm::foreign<Counter, "", TwitchUser>;
-
-// #define findOneByFk(REPO, OBJ, FK) REPO.findOneById<TYPE>({OBJ.FK}).value_or(TYPE{});
-
+// DB_ORM_SPECIALIZE(TwitchUser, id, name);
+// DB_ORM_PRIMARY_KEY(TwitchUser, id);
 using json = nlohmann::json;
 
 namespace nlohmann {
@@ -392,252 +351,306 @@ task<void> run(irc::twitch::bot& bot, const irc::privmsg& privmsg, std::cmatch&&
 }
 }
 
-task<void> amain() {
+// task<void> amain() {
+//   using namespace db::orm::literals;
+//   using db::orm::fields;
 
-  co_return;
+//   ssl::openssl::driver openssl_driver;
+//   ssl::context ssl_context{openssl_driver};
 
-  using namespace db::orm::literals;
-  using db::orm::fields;
+//   db::sqlite::pooled::datasource datasource{".db"};
+//   registerDatabaseUpgradeScripts(datasource);
 
-  ssl::openssl::driver openssl_driver;
-  ssl::context ssl_context{openssl_driver};
+//   datasource.onConnectionCreate() = [](db::connection& conn) {
+//     std::cout << "onConnectionCreate" << std::endl;
+//     conn.profile(std::cout);
 
-  db::sqlite::pooled::datasource datasource{".db"};
-  registerDatabaseUpgradeScripts(datasource);
+//     handleConnectionCreate(conn);
+//   };
 
-  datasource.onConnectionCreate() = [](db::connection& conn) {
-    std::cout << "onConnectionCreate" << std::endl;
-    conn.profile(std::cout);
+//   datasource.onConnectionOpen() = [](db::connection& conn) {
+//     std::cout << "onConnectionOpen" << std::endl;
+//   };
 
-    handleConnectionCreate(conn);
-  };
+//   datasource.onConnectionClose() = [](db::connection& conn) {
+//     std::cout << "onConnectionClose" << std::endl;
 
-  datasource.onConnectionOpen() = [](db::connection& conn) {
-    std::cout << "onConnectionOpen" << std::endl;
-  };
+//     conn.execute("PRAGMA optimize");
+//   };
 
-  datasource.onConnectionClose() = [](db::connection& conn) {
-    std::cout << "onConnectionClose" << std::endl;
+//   while (true) {
+//     std::cout << "CONNECT" << std::endl;
 
-    conn.execute("PRAGMA optimize");
-  };
+//     std::string nick = co_await uv::fs::readAll(".irc-nick");
+//     std::string pass = co_await uv::fs::readAll(".irc-pass");
 
-  while (true) {
-    std::cout << "CONNECT" << std::endl;
+//     irc::twitch::bot bot;
+//     bot.useSSL(ssl_context);
 
-    std::string nick = co_await uv::fs::readAll(".irc-nick");
-    std::string pass = co_await uv::fs::readAll(".irc-pass");
+//     co_await bot.connect();
+//     co_await bot.auth(nick, pass);
+//     co_await bot.capreq(irc::out::twitch::cap::TAGS);
+//     co_await bot.capreq(irc::out::twitch::cap::COMMANDS);
+//     co_await bot.join("pajlada");
 
-    irc::twitch::bot bot;
-    bot.useSSL(ssl_context);
+//     bot.handle<irc::privmsg>([&](const irc::privmsg& privmsg) {
+//       if (privmsg.sender() != "pajbot" || !privmsg.message().starts_with("pajaS 🚨 ALERT")) {
+//         return;
+//       }
 
-    co_await bot.connect();
-    co_await bot.auth(nick, pass);
-    co_await bot.capreq(irc::out::twitch::cap::TAGS);
-    co_await bot.capreq(irc::out::twitch::cap::COMMANDS);
-    co_await bot.join("pajlada");
+//       bot.send(privmsg, "/me FeelsDonkMan 🚨 TERROREM").start();
+//     });
 
-    bot.handle<irc::privmsg>([&](const irc::privmsg& privmsg) {
-      if (privmsg.sender() != "pajbot" || !privmsg.message().starts_with("pajaS 🚨 ALERT")) {
-        return;
-      }
+//     // bot.command(std::regex{R"~(^pajaS 🚨 ALERT)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+//     //   if (privmsg.sender() != "pajbot") {
+//     //     return;
+//     //   }
 
-      bot.send(privmsg, "/me FeelsDonkMan 🚨 TERROREM").start();
-    });
+//     //   bot.send(privmsg, match.str(1)).start();
+//     // });
 
-    // bot.command(std::regex{R"~(^pajaS 🚨 ALERT)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-    //   if (privmsg.sender() != "pajbot") {
-    //     return;
-    //   }
+//     bot.command(std::regex{R"~(^!vhns\s+is\s+(.*))~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+//       bot.send(privmsg, match.str(1)).start();
+//     });
 
-    //   bot.send(privmsg, match.str(1)).start();
-    // });
+//     bot.command(std::regex{R"~(^!i\+\+)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+//       db::orm::repository repo{datasource};
 
-    bot.command(std::regex{R"~(^!vhns\s+is\s+(.*))~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-      bot.send(privmsg, match.str(1)).start();
-    });
+//       auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
 
-    bot.command(std::regex{R"~(^!i\+\+)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-      db::orm::repository repo{datasource};
+//       auto counter = repo
+//         .select<Counter>()
+//         .where(
+//           fields<Counter>::twitch_user_id == twitch_user_id
+//         )
+//         .findOne()
+//         .value_or(Counter{
+//           .twitch_user_id = twitch_user_id,
+//         });
 
-      auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
+//       auto i = counter.i++;
 
-      auto counter = repo
-        .select<Counter>()
-        .where(
-          fields<Counter>::twitch_user_id == twitch_user_id
-        )
-        .findOne()
-        .value_or(Counter{
-          .twitch_user_id = twitch_user_id,
-        });
+//       repo.save(counter);
+//       std::cout << "id: " << counter.id << std::endl;
 
-      auto i = counter.i++;
+//       // auto twitch_user = counter.twitch_user(repo);
+//       // if (!twitch_user) {
+//       //   twitch_user.name = privmsg.sender();
+//       //   repo.save(twitch_user);
+//       // }
 
-      repo.save(counter);
-      std::cout << "id: " << counter.id << std::endl;
+//       bot.reply(privmsg, std::to_string(i)).start();
+//     });
 
-      // auto twitch_user = counter.twitch_user(repo);
-      // if (!twitch_user) {
-      //   twitch_user.name = privmsg.sender();
-      //   repo.save(twitch_user);
-      // }
+//     bot.command(std::regex{R"~(^!idel)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+//       db::orm::repository repo{datasource};
 
-      bot.reply(privmsg, std::to_string(i)).start();
-    });
+//       auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
 
-    bot.command(std::regex{R"~(^!idel)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-      db::orm::repository repo{datasource};
+//       auto counter = repo.select<Counter>()
+//         .where(
+//           fields<Counter>::twitch_user_id == twitch_user_id
+//         )
+//         .findOne()
+//         .value_or(Counter{});
 
-      auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
+//       std::cout << "id: " << counter.id << std::endl;
+//       repo.remove(counter);
 
-      auto counter = repo.select<Counter>()
-        .where(
-          fields<Counter>::twitch_user_id == twitch_user_id
-        )
-        .findOne()
-        .value_or(Counter{});
+//       auto i = counter.i;
 
-      std::cout << "id: " << counter.id << std::endl;
-      repo.remove(counter);
+//       bot.reply(privmsg, std::to_string(i)).start();
+//     });
 
-      auto i = counter.i;
+//     bot.command(std::regex{R"~(^!i\=(\d+))~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
+//       db::orm::repository repo{datasource};
 
-      bot.reply(privmsg, std::to_string(i)).start();
-    });
+//       auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
 
-    bot.command(std::regex{R"~(^!i\=(\d+))~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-      db::orm::repository repo{datasource};
+//       auto counter = repo.select<Counter>()
+//         .where(
+//           fields<Counter>::twitch_user_id == twitch_user_id
+//         )
+//         .findOne()
+//         .value_or(Counter{
+//           .twitch_user_id = twitch_user_id,
+//         });
 
-      auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
+//       try {
+//         counter.i = std::stoll(match.str(1));
+//       } catch (...) {
+//         bot.reply(privmsg, "fdm").start();
+//         return;
+//       }
 
-      auto counter = repo.select<Counter>()
-        .where(
-          fields<Counter>::twitch_user_id == twitch_user_id
-        )
-        .findOne()
-        .value_or(Counter{
-          .twitch_user_id = twitch_user_id,
-        });
+//       auto i = counter.i;
 
-      try {
-        counter.i = std::stoll(match.str(1));
-      } catch (...) {
-        bot.reply(privmsg, "fdm").start();
-        return;
-      }
+//       repo.save(counter);
+//       std::cout << "id: " << counter.id << std::endl;
 
-      auto i = counter.i;
+//       bot.reply(privmsg, std::to_string(i)).start();
+//     });
 
-      repo.save(counter);
-      std::cout << "id: " << counter.id << std::endl;
+//     co_await bot.readMessagesUntilEOF();
+//   }
 
-      bot.reply(privmsg, std::to_string(i)).start();
-    });
+//   // uv::tty ttyin(uv::tty::STDIN);
+//   // uv::tty ttyout(uv::tty::STDOUT);
+//   // co_await ttyin.readLinesAsViewsUntilEOF([&](auto line) {
+//   //   task<>::run([&]() -> task<void> {
+//   //     auto start = uv::hrtime();
 
-    co_await bot.readMessagesUntilEOF();
-  }
+//   //     http::response response = co_await http::fetch(line);
+//   //     if (!response) {
+//   //       // throw http::error{response};
+//   //     }
 
-  // uv::tty ttyin(uv::tty::STDIN);
-  // uv::tty ttyout(uv::tty::STDOUT);
-  // co_await ttyin.readLinesAsViewsUntilEOF([&](auto line) {
-  //   task<>::run([&]() -> task<void> {
-  //     auto start = uv::hrtime();
+//   //     std::cout << (std::string)response << std::endl;
 
-  //     http::response response = co_await http::fetch(line);
-  //     if (!response) {
-  //       // throw http::error{response};
-  //     }
+//   //     auto end = uv::hrtime();
 
-  //     std::cout << (std::string)response << std::endl;
-
-  //     auto end = uv::hrtime();
-
-  //     std::cout << "request done: " << ((end - start) * 1e-6) << " ms" << std::endl;
-  //   });
-  // });
-}
+//   //     std::cout << "request done: " << ((end - start) * 1e-6) << " ms" << std::endl;
+//   //   });
+//   // });
+// }
 
 int main() {
-  // ssl::openssl::driver openssl_driver;
-  // ssl::context ssl_context{openssl_driver, ssl::ACCEPT};
-  // ssl_context.usePrivateKeyFile("server.key");
-  // ssl_context.useCertificateFile("server.crt");
-  // ssl_context.useALPNCallback({"h2", "http/1.1"});
+  ssl::openssl::driver openssl_driver;
+  ssl::context ssl_context{openssl_driver, ssl::ACCEPT};
+  ssl_context.usePrivateKeyFile("server-key.pem");
+  ssl_context.useCertificateFile("server-cert.pem");
+  ssl_context.useALPNCallback({"h2", "http/1.1"});
 
-  // uv::tcp server;
-  // server.useSSL(ssl_context);
-  // server.bind4("127.0.0.1", 8001);
-  // server.listen([&](auto error) {
-  //   task<>::run([&]() -> task<void> {
-  //     uv::tcp client;
-  //     co_await server.accept(client);
+  auto callback = [&](http::request& request, http::response& response) -> task<void> {
+    // std::cout << (std::string)request << std::endl;
 
-  //     if (client.sslState().protocol() == "h2") {
-  //       http2::handler<http::request> handler;
+    // auto test = co_await http::fetch("https://api.gazatu.xyz/trivia/questions?count=5");
 
-  //       handler.onSend([&](auto input) {
-  //         client.write((std::string)input).start();
-  //       });
+    response.headers["content-type"] = "text/plain";
+    response.body = "Hello World!";
 
-  //       client.readStart([&](auto chunk, auto error) {
-  //         if (error) {
-  //           handler.close();
-  //         } else {
-  //           handler.execute(chunk);
-  //         }
-  //       });
+    // std::cout << (std::string)response << std::endl;
 
-  //       http::request request = co_await handler.complete();
-  //       if (!handler) {
-  //         // throw http::error{"unexpected EOF"};
-  //       }
+    if (request.headers["accept-encoding"].find("gzip") != std::string::npos) {
+      response.headers["content-encoding"] = "gzip";
+      http::compress(response.body);
+    }
 
-  //       std::cout << (std::string)request << std::endl;
+    response.headers["content-length"] = std::to_string(response.body.length());
 
-  //       co_await client.shutdown();
-  //     } else {
-  //       http::parser<http::request> parser;
+    co_return;
+  };
 
-  //       client.readStart([&](auto chunk, auto error) {
-  //         if (error) {
-  //           parser.close();
-  //         } else {
-  //           parser.execute(chunk);
-  //         }
-  //       });
+  uv::tcp server;
+  server.useSSL(ssl_context);
+  server.bind4("127.0.0.1", 8001);
+  // server.bind6("::1", 8001);
+  server.listen([&](auto error) {
+    task<>::run([&]() -> task<void> {
+      uv::tcp client;
+      co_await server.accept(client);
 
-  //       http::request request = co_await parser.complete();
-  //       if (!parser) {
-  //         throw http::error{"unexpected EOF"};
-  //       }
+      if (client.sslState().protocol() == "h2") {
+        http2::handler<http::request> handler;
 
-  //       // std::cout << (std::string)request << std::endl;
+        handler.onSend([&](auto input) {
+          client.write((std::string)input).start();
+        });
 
-  //       http::response response;
-  //       response.headers["connection"] = "close";
-  //       response.headers["content-type"] = "text/plain";
-  //       response.body = "Hello World!";
+        std::unordered_map<int32_t, std::function<void()>> on_close;
 
-  //       if (request.headers["accept-encoding"].find("gzip") != std::string::npos) {
-  //         response.headers["content-encoding"] = "gzip";
-  //         http::compress(response.body);
-  //       }
+        client.readStart([&](auto chunk, auto error) {
+          if (error) {
+            for (auto& [key, fn] : on_close) {
+              fn();
+            }
 
-  //       co_await client.write((std::string)response);
-  //       co_await client.shutdown();
-  //     }
-  //   });
-  // });
+            handler.close();
+          } else {
+            handler.execute(chunk);
+          }
+        });
 
-  auto amain_task = amain();
-  amain_task.start_owned();
+        handler.submitSettings();
+        handler.sendSession();
+
+        handler.onStreamEnd([&](int32_t id, http::request&& request) {
+          task<>::run([&handler, &callback, id, &request, &on_close]() -> task<void> {
+            bool closed = false;
+            on_close.emplace(id, [&closed]() {
+              closed = true;
+            });
+
+            http::request _request = std::move(request);
+            http::response _response;
+            co_await callback(_request, _response);
+
+            if (closed) {
+              co_return;
+            } else {
+              on_close.erase(id);
+            }
+
+            auto on_sent = handler.submitResponse(_response, id);
+            handler.sendSession();
+            co_await on_sent;
+          });
+        });
+
+        co_await handler.onComplete();
+        if (!handler) {
+          // throw http::error{"unexpected EOF"};
+        }
+
+        if (client.isActive()) {
+          co_await client.shutdown();
+        }
+      } else {
+        while (true) {
+          http::parser<http::request> parser;
+
+          client.readStart([&](auto chunk, auto error) {
+            if (error) {
+              parser.close();
+            } else {
+              parser.execute(chunk);
+            }
+          });
+
+          http::request request = co_await parser.onComplete();
+          if (!parser) {
+            throw http::error{"unexpected EOF"};
+          }
+
+          http::response response;
+          co_await callback(request, response);
+
+          request.headers["connection"] = "close"; // TODO: fix
+          response.headers["connection"] = "close"; // TODO: fix
+
+          if (client.isActive()) {
+            co_await client.write((std::string)response);
+
+            if (request.headers["connection"] == "close") {
+              co_await client.shutdown();
+              break;
+            }
+          } else {
+            break;
+          }
+        }
+      }
+    });
+  });
+
+  // auto amain_task = amain();
+  // amain_task.start_owned();
 
   uv::run();
 
-  if (amain_task.done()) {
-    amain_task.unpack();
-  }
+  // if (amain_task.done()) {
+  //   amain_task.unpack();
+  // }
 
   return 0;
 }

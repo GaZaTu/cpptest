@@ -18,7 +18,6 @@ public:
     if constexpr (type == HTTP_REQUEST) {
       _result.method = (http_method)-1;
       _result.url.schema("http");
-      _result.url.port(80);
     } else {
       _result.status = (http_status)-1;
     }
@@ -97,11 +96,20 @@ public:
 
       if (parser->_on_complete) {
         parser->_on_complete(parser->_result);
+        parser->_on_complete = nullptr;
       }
 
       return 0;
     };
   }
+
+  parser(const url&) = delete;
+
+  parser(parser&&) = delete;
+
+  parser& operator=(const parser&) = delete;
+
+  parser& operator=(parser&&) = delete;
 
   void execute(std::string_view chunk) {
     size_t offset = http_parser_execute(&_parser, &_settings, chunk.data(), chunk.length());
@@ -121,23 +129,26 @@ public:
     // return {};
   }
 
-  void complete(std::function<void(T&)> on_complete) {
+  void onComplete(std::function<void(T&)> on_complete) {
     _on_complete = std::move(on_complete);
   }
 
 #ifndef HTTPPP_NO_TASK
-  task<T> complete() {
+  task<T> onComplete() {
     return task<T>::create([this](auto& resolve, auto&) {
-      complete(resolve);
+      onComplete(resolve);
     });
   }
 #endif
 
   void close() {
-    _on_complete(_result);
+    if (_on_complete) {
+      _on_complete(_result);
+      _on_complete = nullptr;
+    }
   }
 
-  T result() const {
+  auto& result() {
     return _result;
   }
 

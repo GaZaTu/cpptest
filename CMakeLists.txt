@@ -1,11 +1,9 @@
-cmake_minimum_required(VERSION 3.3.0 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.12.0 FATAL_ERROR)
 project(cpptest VERSION 0.0.1 LANGUAGES CXX)
 
 set(PROJECT_ORGANIZATION gazatu.xyz)
 
-if (${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.12.0")
-  cmake_policy(SET CMP0074 NEW)
-endif ()
+cmake_policy(SET CMP0074 NEW)
 
 add_definitions(
   -DPROJECT_ORGANIZATION="${PROJECT_ORGANIZATION}"

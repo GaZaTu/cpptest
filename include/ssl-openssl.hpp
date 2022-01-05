@@ -75,7 +75,6 @@ public:
 
       if (!ready()) {
         handshake();
-        return;
       }
 
       char buffer[65536];
@@ -315,7 +314,7 @@ public:
 
   private:
     static constexpr int NO_SSL = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3;
-    static constexpr int NO_TLS = SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1; // | SSL_OP_NO_TLSv1_2
+    static constexpr int NO_TLS = SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 /* | SSL_OP_NO_TLSv1_2 */;
     static constexpr int NO_OLD_PROTOCOLS = NO_SSL | NO_TLS;
 
     ssl::mode _mode;

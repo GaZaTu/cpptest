@@ -14,9 +14,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#ifdef UVPP_PERF
-#include <chrono>
-#endif
 
 namespace uv {
 struct stream : public handle {
@@ -28,9 +25,6 @@ public:
     std::function<void(std::string_view, uv::error)> read_cb;
 #ifndef UVPP_NO_SSL
     std::function<void(std::string_view, uv::error)> read_decrypted_cb;
-#endif
-#ifdef UVPP_PERF
-    std::chrono::time_point<std::chrono::high_resolution_clock> read_listener_called;
 #endif
   };
 
@@ -58,13 +52,8 @@ public:
   }
 
   virtual void close(std::function<void()> close_cb) noexcept override {
+    readStop();
     handle::close(close_cb);
-
-    auto data_ptr = getData<data>();
-    if (!data_ptr->sent_eof) {
-      data_ptr->sent_eof = true;
-      data_ptr->read_cb({}, uv::error{UV_EOF});
-    }
   }
 
   void shutdown(std::function<void(uv::error)> cb) {
@@ -127,7 +116,12 @@ public:
       return;
     }
 #endif
+    bool reading = !!data_ptr->read_cb;
     data_ptr->read_cb = std::move(cb);
+
+    if (reading) {
+      return;
+    }
 
     error::test(uv_read_start(
         *this,
@@ -137,10 +131,6 @@ public:
         },
         [](uv_stream_t* native_stream, ssize_t nread, const uv_buf_t* buf) {
           auto data_ptr = handle::getData<data>(native_stream);
-
-#ifdef UVPP_PERF
-          data_ptr->read_listener_called = std::chrono::high_resolution_clock::now();
-#endif
 
           if (nread < 0) {
             if (nread == UV_EOF) {
@@ -417,12 +407,6 @@ public:
 
   ssl::state& sslState() {
     return _ssl_state;
-  }
-#endif
-
-#ifdef UVPP_PERF
-  auto readListenerCalled() {
-    return getData<data>()->read_listener_called;
   }
 #endif
 

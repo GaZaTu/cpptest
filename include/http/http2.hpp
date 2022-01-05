@@ -15,16 +15,6 @@ template <typename T>
 struct handler {
 public:
   handler() {
-    _result.version = {2, 0};
-
-    if constexpr (type == HTTP_REQUEST) {
-      _result.method = (http_method)-1;
-      _result.url.schema = "https";
-      _result.url.port = 443;
-    } else {
-      _result.status = (http_status)-1;
-    }
-
     nghttp2_session_callbacks_new(&_callbacks);
 
     nghttp2_session_callbacks_set_send_callback(
@@ -37,42 +27,74 @@ public:
           return (ssize_t)length;
         });
 
+    nghttp2_session_callbacks_set_on_begin_headers_callback(_callbacks,
+        [](nghttp2_session *session, const nghttp2_frame *frame, void *user_data) {
+          auto handler = (http2::handler<T>*)user_data;
+
+          nghttp2_session_set_stream_user_data(handler->_session, frame->hd.stream_id, (void*)1);
+
+          if (frame->hd.type != NGHTTP2_HEADERS) {
+            return 0;
+          }
+
+          T result;
+          result.version = {2, 0};
+
+          if constexpr (type == HTTP_REQUEST) {
+            result.url.schema("https");
+          } else {
+            result.status = (http_status)-1;
+          }
+
+          handler->_result.emplace(frame->hd.stream_id, std::move(result));
+
+          return 0;
+        });
+
     nghttp2_session_callbacks_set_on_header_callback(_callbacks,
         [](nghttp2_session* session, const nghttp2_frame* frame, const uint8_t* name, size_t namelen,
             const uint8_t* value, size_t valuelen, uint8_t flags, void* user_data) {
-          std::string header_name{(const char*)name, namelen};
-          std::string header_value{(const char*)value, valuelen};
+          if (frame->hd.type != NGHTTP2_HEADERS) {
+            return 0;
+          }
+
+          std::string_view header_name{(const char*)name, namelen};
+          std::string_view header_value{(const char*)value, valuelen};
 
           auto handler = (http2::handler<T>*)user_data;
+          auto& result = handler->_result[frame->hd.stream_id];
 
           if constexpr (type == HTTP_REQUEST) {
             if (header_name == ":method") {
-              handler->_result.method = (http_method)std::stoi(header_value);
+              result.method = http::method{header_value};
               return 0;
             }
             if (header_name == ":scheme") {
-              handler->_result.url.schema = header_value;
+              result.url.schema(header_value);
               return 0;
             }
             if (header_name == ":authority") {
-              handler->_result.url.host = header_value;
+              result.url.host(header_value);
               return 0;
             }
             if (header_name == ":path") {
-              http::url path{header_value, http::url::IN};
-              handler->_result.url.path(std::move(path.path()));
-              handler->_result.url.query(std::move(path.query()));
-              handler->_result.url.fragment(std::move(path.fragment()));
+              http::url url{header_value, http::url::IN};
+              url.schema(result.url.schema());
+              url.host(result.url.host());
+
+              result.url = std::move(url);
               return 0;
             }
+
+            result.headers[(std::string)header_name] = (std::string)header_value;
           } else {
             if (header_name == ":status") {
-              handler->_result.status = (http_status)std::stoi(header_value);
+              result.status = (http_status)std::stoi((std::string)header_value);
               return 0;
             }
-          }
 
-          handler->_result.headers[std::move(header_name)] = std::move(header_value);
+            result.headers[(std::string)header_name] = (std::string)header_value;
+          }
 
           return 0;
         });
@@ -83,58 +105,66 @@ public:
           std::string_view chunk{(const char*)data, len};
 
           auto handler = (http2::handler<T>*)user_data;
-          handler->_result.body += chunk;
+          handler->_result[stream_id].body += chunk;
+
+          return 0;
+        });
+
+    nghttp2_session_callbacks_set_on_stream_close_callback(
+        _callbacks, [](nghttp2_session* session, int32_t stream_id, uint32_t error_code, void* user_data) {
+          auto handler = (http2::handler<T>*)user_data;
+
+          nghttp2_session_set_stream_user_data(handler->_session, stream_id, (void*)0);
+
+          if constexpr (type == HTTP_RESPONSE) {
+            nghttp2_session_terminate_session(session, NGHTTP2_NO_ERROR);
+            handler->onStreamClose(stream_id);
+          }
+
+          return 0;
+        });
+
+    nghttp2_session_callbacks_set_on_frame_recv_callback(
+        _callbacks, [](nghttp2_session* session, const nghttp2_frame* frame, void* user_data) {
+          auto handler = (http2::handler<T>*)user_data;
+
+          switch (frame->hd.type) {
+          case NGHTTP2_DATA:
+          case NGHTTP2_HEADERS:
+            if (frame->hd.flags & NGHTTP2_FLAG_END_STREAM) {
+              if (nghttp2_session_get_stream_user_data(session, frame->hd.stream_id) == 0) {
+                return 0;
+              }
+
+              return handler->onStreamClose(frame->hd.stream_id);
+            }
+            break;
+          }
+
+          return 0;
+        });
+
+    nghttp2_session_callbacks_set_on_frame_send_callback(
+        _callbacks, [](nghttp2_session* session, const nghttp2_frame* frame, void* user_data) {
+          auto handler = (http2::handler<T>*)user_data;
+
+          switch (frame->hd.type) {
+          case NGHTTP2_DATA:
+          case NGHTTP2_HEADERS:
+            if (frame->hd.flags & NGHTTP2_FLAG_END_STREAM) {
+              return 0;
+            }
+            break;
+          }
 
           return 0;
         });
 
     if constexpr (type == HTTP_REQUEST) {
-      nghttp2_session_callbacks_set_on_frame_recv_callback(
-          _callbacks, [](nghttp2_session* session, const nghttp2_frame* frame, void* user_data) {
-            auto handler = (http2::handler<T>*)user_data;
-
-            if constexpr (type == HTTP_REQUEST) {
-              // switch (frame->hd.type) {
-              // case NGHTTP2_DATA:
-              // case NGHTTP2_HEADERS: {
-              //   /* Check that the client request has finished */
-              //   if (frame->hd.flags & NGHTTP2_FLAG_END_STREAM) {
-              //     auto stream_data = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
-              //     /* For DATA and HEADERS frame, this callback may be called after
-              //       on_stream_close_callback. Check that stream still alive. */
-              //     if (!stream_data) {
-              //       return 0;
-              //     }
-
-              //     http2_stream_data xd;
-
-              //     parser->_result.url = stream_data->request_path;
-
-              //     handler->onStreamClose();
-              //     return 0;
-              //   }
-              //   break;
-              // }
-              // }
-            } else {
-              handler->onStreamClose();
-            }
-
-            return 0;
-          });
+      nghttp2_session_server_new(&_session, _callbacks, this);
     } else {
-      nghttp2_session_callbacks_set_on_stream_close_callback(
-          _callbacks, [](nghttp2_session* session, int32_t stream_id, uint32_t error_code, void* user_data) {
-            nghttp2_session_terminate_session(session, NGHTTP2_NO_ERROR);
-
-            auto handler = (http2::handler<T>*)user_data;
-            handler->onStreamClose();
-
-            return 0;
-          });
+      nghttp2_session_client_new(&_session, _callbacks, this);
     }
-
-    nghttp2_session_client_new(&_session, _callbacks, this);
   }
 
   ~handler() {
@@ -155,23 +185,30 @@ public:
     sendSession();
   }
 
-  void complete(std::function<void(T&)> on_complete) {
+  void onStreamEnd(std::function<void(int32_t, T&&)> on_stream_end) {
+    _on_stream_end = std::move(on_stream_end);
+  }
+
+  void onComplete(std::function<void()> on_complete) {
     _on_complete = std::move(on_complete);
   }
 
 #ifndef HTTPPP_NO_TASK
-  task<T> complete() {
-    return task<T>::create([this](auto& resolve, auto&) {
-      complete(resolve);
+  task<void> onComplete() {
+    return task<void>::create([this](auto& resolve, auto&) {
+      onComplete(resolve);
     });
   }
 #endif
 
   void close() {
-    _on_complete(_result);
+    if (_on_complete) {
+      _on_complete();
+      _on_complete = nullptr;
+    }
   }
 
-  T result() const {
+  auto& result() {
     return _result;
   }
 
@@ -190,65 +227,83 @@ public:
     }
   }
 
-  void submitRequest(const http::request& request) {
-    std::string method = request.method;
+  uint32_t submitRequest(const http::request& request) {
+    std::string method = (std::string)request.method;
     std::string scheme = request.url.schema();
     std::string authority = request.url.host();
     std::string path = request.url.fullpath();
 
-    short pseudo_headers_len = 4;
-    size_t headers_len = pseudo_headers_len + request.headers.size();
-    nghttp2_nv* headers = new nghttp2_nv[headers_len];
-
-    headers[0] = makeNV(":method", method);
-    headers[1] = makeNV(":scheme", scheme);
-    headers[2] = makeNV(":authority", authority);
-    headers[3] = makeNV(":path", path);
-
-    size_t i = pseudo_headers_len;
+    std::vector<nghttp2_nv> headers;
+    headers.push_back(makeNV(":method", method));
+    headers.push_back(makeNV(":scheme", scheme));
+    headers.push_back(makeNV(":authority", authority));
+    headers.push_back(makeNV(":path", path));
     for (const auto& [name, value] : request.headers) {
-      headers[i++] = makeNV(name, value);
+      headers.push_back(makeNV(name, value));
     }
 
-    int id = nghttp2_submit_request(_session, 0, headers, headers_len, nullptr, this);
+    int id = nghttp2_submit_request(_session, 0, headers.data(), headers.size(), nullptr, this);
     if (id <= 0) {
       throw http::error{nghttp2_strerror(id)};
     }
+
+    return id;
   }
 
-  void submitResponse(const http::response& response) {
-    std::string status{std::to_string(response.status)};
+  void submitResponse(const http::response& response, int32_t stream_id, std::function<void()> on_send) {
+    std::string status = std::to_string(response.status);
 
-    short pseudo_headers_len = 1;
-    size_t headers_len = pseudo_headers_len + response.headers.size();
-    nghttp2_nv* headers = new nghttp2_nv[headers_len];
-
-    headers[0] = makeNV(":status", status);
-
-    size_t i = pseudo_headers_len;
+    std::vector<nghttp2_nv> headers;
+    headers.push_back(makeNV(":status", status));
     for (const auto& [name, value] : response.headers) {
-      headers[i++] = makeNV(name, value);
+      headers.push_back(makeNV(name, value));
     }
 
-    nghttp2_data_provider data_provider;
-    data_provider.source = {0, &response};
-    data_provider.read_callback = [](nghttp2_session* session, int32_t stream_id, uint8_t* buf, size_t length,
-                                      uint32_t* data_flags, nghttp2_data_source* source, void* user_data) {
-      auto response = (http::response*)user_data;
+    struct read_context {
+      const http::response* response;
+      uint64_t offset;
+      std::function<void()> on_send;
+    };
+    auto context = new read_context();
+    context->response = &response;
+    context->offset = 0;
+    context->on_send = std::move(on_send);
 
-      auto& offset = (unsigned int)source->fd;
-      size_t copy_length = std::min(response->body.length(), length);
-      memcpy(buf, response->body.data() + offset, copy_length);
+    nghttp2_data_provider data_provider;
+    data_provider.source.ptr = (void*)context;
+    data_provider.read_callback = [](nghttp2_session* session, int32_t stream_id, uint8_t* buf, size_t length,
+                                      uint32_t* data_flags, nghttp2_data_source* source, void* user_data) -> ssize_t {
+      auto context = (read_context*)source->ptr;
+      const auto& response = *context->response;
+
+      auto& offset = context->offset;
+      size_t copy_length = std::min(response.body.length(), length);
+      memcpy(buf, response.body.data() + offset, copy_length);
       offset += copy_length;
+
+      if (response.body.length() == offset) {
+        auto on_send = std::move(context->on_send);
+        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+        delete context;
+        on_send();
+      }
 
       return copy_length;
     };
 
-    int id = nghttp2_submit_response(_session, 0, headers, headers_len, &data_provider);
-    if (id <= 0) {
-      throw http::error{nghttp2_strerror(id)};
+    int rv = nghttp2_submit_response(_session, stream_id, headers.data(), headers.size(), &data_provider);
+    if (rv != 0) {
+      throw http::error{nghttp2_strerror(rv)};
     }
   }
+
+#ifndef HTTPPP_NO_TASK
+  task<void> submitResponse(const http::response& response, int32_t stream_id) {
+    return task<void>::create([this, &response, stream_id](auto& resolve, auto&) {
+      submitResponse(response, stream_id, resolve);
+    });
+  }
+#endif
 
   void sendSession() {
     int rv = nghttp2_session_send(_session);
@@ -260,32 +315,43 @@ public:
 private:
   static constexpr http_parser_type type = std::is_same_v<T, http::request> ? HTTP_REQUEST : HTTP_RESPONSE;
 
+  struct stream_data {
+    T result;
+  };
+
   nghttp2_session_callbacks* _callbacks;
   nghttp2_session* _session;
 
   bool _done = false;
-  std::function<void(T&)> _on_complete;
+  std::function<void()> _on_complete;
 
-  T _result;
+  std::unordered_map<int32_t, T> _result;
 
   std::function<void(std::string_view)> _on_send;
 
-  int onStreamClose() {
-    if (_result.headers["content-encoding"] == "gzip") {
-      int rc = http::uncompress(_result.body);
+  std::function<void(int32_t, T&&)> _on_stream_end;
+
+  int onStreamClose(int32_t stream_id) {
+    auto& result = _result[stream_id];
+
+    if (result.headers["content-encoding"] == "gzip") {
+      int rc = http::uncompress(result.body);
       if (rc != 0) {
         return rc;
       }
     }
 
-    if constexpr (type == HTTP_REQUEST) {
-      _done = _result.method != -1;
-    } else {
-      _done = _result.status != -1;
+    if (_on_stream_end) {
+      _on_stream_end(stream_id, std::move(result));
+
+      if constexpr (type == HTTP_REQUEST) {
+        _result.erase(stream_id);
+      }
     }
 
-    if (_on_complete) {
-      _on_complete(_result);
+    if (nghttp2_session_want_read(_session) == 0 &&
+        nghttp2_session_want_write(_session) == 0) {
+      _on_complete();
     }
 
     return 0;

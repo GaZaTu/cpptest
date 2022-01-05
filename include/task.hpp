@@ -17,7 +17,7 @@ std::queue<std::function<void()>> completed_tasks;
 std::shared_mutex completed_tasks_rwlock;
 
 void deleteTask(std::function<void()> deleter) {
-  std::unique_lock lock(detail::completed_tasks_rwlock);
+  std::unique_lock lock{detail::completed_tasks_rwlock};
 
   while (!detail::completed_tasks.empty()) {
     auto& existing_deleter = detail::completed_tasks.front();

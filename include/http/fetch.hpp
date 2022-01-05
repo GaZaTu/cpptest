@@ -37,14 +37,14 @@ task<http::response> fetch(http::request& request) {
     handler.onSend([&](auto input) {
       tcp.write((std::string)input).start();
     });
-    handler.complete([&](auto&) {
+    handler.onStreamEnd([&](auto, auto&&) {
       uv::async::queue([&]() {
         tcp.readStop();
       });
     });
 
     handler.submitSettings();
-    handler.submitRequest(request);
+    auto id = handler.submitRequest(request);
     handler.sendSession();
 
     co_await tcp.readStartUntilEOF([&](auto chunk) {
@@ -52,10 +52,11 @@ task<http::response> fetch(http::request& request) {
     });
 
     if (!handler) {
-      throw http::error{"unexpected EOF"};
+      // throw http::error{"unexpected EOF"};
     }
 
-    co_return handler.result();
+    auto response = std::move(handler.result()[id]);
+    co_return response;
   } else {
     http::parser<http::response> parser;
 
@@ -72,7 +73,8 @@ task<http::response> fetch(http::request& request) {
       throw http::error{"unexpected EOF"};
     }
 
-    co_return parser.result();
+    auto response = std::move(parser.result());
+    co_return response;
   }
 }
 

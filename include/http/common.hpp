@@ -6,6 +6,20 @@
 #include <unordered_map>
 
 namespace http {
+namespace detail {
+namespace method {
+struct entry {
+  std::string_view name;
+  std::string_view text;
+};
+std::unordered_map<http_method, entry> strings = {
+#define XX(num, name, string) {HTTP_##name, {#name, #string}},
+    HTTP_METHOD_MAP(XX)
+#undef XX
+};
+}
+}
+
 struct method {
 public:
   enum _enum {
@@ -20,17 +34,40 @@ public:
 
   method(http_method value) : _value{(_enum)value} {}
 
+  method(std::string_view value) {
+    for (const auto& [key, entry] : detail::method::strings) {
+      if (entry.name == value) {
+        _value = (_enum)key;
+        break;
+      }
+    }
+  }
+
   operator http_method() const {
     return (http_method)_value;
   }
 
-  operator std::string() const {
-    return http_method_str(*this);
+  operator std::string_view() const {
+    return detail::method::strings[(http_method)_value].text;
   }
 
 private:
   _enum _value;
 };
+
+namespace detail {
+namespace status {
+struct entry {
+  std::string_view name;
+  std::string_view text;
+};
+std::unordered_map<http_status, entry> strings = {
+#define XX(num, name, string) {HTTP_STATUS_##name, {#name, #string}},
+    HTTP_STATUS_MAP(XX)
+#undef XX
+};
+}
+}
 
 struct status {
 public:
@@ -46,22 +83,33 @@ public:
 
   status(http_status value) : _value{(_enum)value} {}
 
+  status(std::string_view value) {
+    for (const auto& [key, entry] : detail::status::strings) {
+      if (entry.name == value) {
+        _value = (_enum)key;
+        break;
+      }
+    }
+  }
+
   operator http_status() const {
     return (http_status)_value;
   }
 
-  operator std::string() const {
-    return http_status_str(*this);
+  operator std::string_view() const {
+    return detail::status::strings[(http_status)_value].text;
   }
 
 private:
   _enum _value;
 };
 
+namespace detail {
 std::unordered_map<std::string_view, uint16_t> known_protocols = {
   {"http", 80},
   {"https", 443},
 };
+}
 
 struct url {
 public:
@@ -91,8 +139,8 @@ public:
     move(UF_QUERY, _query);
     move(UF_FRAGMENT, _fragment);
 
-    if (known_protocols.contains(_schema)) {
-      _port = known_protocols[_schema];
+    if (detail::known_protocols.contains(_schema)) {
+      _port = detail::known_protocols[_schema];
     }
 
     if (parser.port != 0) {
@@ -115,8 +163,8 @@ public:
     return _schema;
   }
 
-  url& schema(std::string&& value) {
-    _schema = std::move(value);
+  url& schema(std::string_view value) {
+    _schema = value;
     return *this;
   }
 
@@ -124,8 +172,8 @@ public:
     return _host;
   }
 
-  url& host(std::string&& value) {
-    _host = std::move(value);
+  url& host(std::string_view value) {
+    _host = value;
     return *this;
   }
 
@@ -142,8 +190,8 @@ public:
     return _path;
   }
 
-  url& path(std::string&& value) {
-    _path = std::move(value);
+  url& path(std::string_view value) {
+    _path = value;
     return *this;
   }
 
@@ -151,8 +199,8 @@ public:
     return _query;
   }
 
-  url& query(std::string&& value) {
-    _query = std::move(value);
+  url& query(std::string_view value) {
+    _query = value;
     return *this;
   }
 
@@ -171,8 +219,8 @@ public:
     return _fragment;
   }
 
-  url& fragment(std::string&& value) {
-    _fragment = std::move(value);
+  url& fragment(std::string_view value) {
+    _fragment = value;
     return *this;
   }
 
@@ -196,9 +244,11 @@ public:
     if (_host != "") {
       result << _schema << "://" << _host;
 
-      auto protocol_port = known_protocols.find(_schema);
-      if (protocol_port == known_protocols.end() || _port != protocol_port->second) {
-        result << ":" << _port;
+      if (_port != 0) {
+        auto protocol_port = detail::known_protocols.find(_schema);
+        if (protocol_port == detail::known_protocols.end() || _port != protocol_port->second) {
+          result << ":" << _port;
+        }
       }
     }
 
@@ -208,9 +258,9 @@ public:
   }
 
 private:
-  std::string _schema = "http";
+  std::string _schema;
   std::string _host;
-  uint16_t _port = known_protocols[_schema];
+  uint16_t _port = 0;
   std::string _path = "/";
   std::string _query;
   std::string _fragment;
@@ -250,7 +300,7 @@ private:
 
     result << (std::string)r.method << " ";
     result << (std::string)url << " ";
-    result << "HTTP/" << std::get<0>(r.version) << "." << std::get<1>(r.version) << "\r\n";
+    result << "HTTP/" << (int)std::get<0>(r.version) << "." << (int)std::get<1>(r.version) << "\r\n";
 
     for (const auto& [key, value] : headers) {
       result << key << ": " << value << "\r\n";
