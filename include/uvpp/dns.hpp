@@ -39,7 +39,7 @@ void uv_freeaddrinfo2(::addrinfo* addr) {
   printf("");
 }
 
-void getaddrinfo(std::string_view node, std::string_view service, std::function<void(uv::dns::addrinfo, uv::error)> cb,
+void getaddrinfo(const std::string& node, const std::string& service, std::function<void(uv::dns::addrinfo, uv::error)> cb,
     uv_loop_t* native_loop = uv_default_loop()) {
   struct data_t : public uv::detail::req::data {
     std::function<void(uv::dns::addrinfo, uv::error)> cb;
@@ -70,9 +70,9 @@ void getaddrinfo(std::string_view node, std::string_view service, std::function<
 
 #ifndef UVPP_NO_TASK
 task<uv::dns::addrinfo> getaddrinfo(
-    std::string_view node, std::string_view service, uv_loop_t* native_loop = uv_default_loop()) {
+    const std::string& node, const std::string& service, uv_loop_t* native_loop = uv_default_loop()) {
   return task<uv::dns::addrinfo>::create(
-      [node{(std::string)node}, service{(std::string)service}, native_loop](auto& resolve, auto& reject) {
+      [node, service, native_loop](auto& resolve, auto& reject) {
         uv::dns::getaddrinfo(
             node, service,
             [&resolve, &reject](auto result, auto error) {

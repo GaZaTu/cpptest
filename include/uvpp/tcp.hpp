@@ -151,7 +151,7 @@ public:
   }
 #endif
 
-  void connect(std::string_view node, std::string_view service, std::function<void(uv::error)> cb) {
+  void connect(const std::string& node, const std::string& service, std::function<void(uv::error)> cb) {
     uv::dns::getaddrinfo(node, service, [this, cb](auto addr, auto error) {
       if (error) {
         cb(error);
@@ -163,19 +163,19 @@ public:
   }
 
 #ifndef UVPP_NO_TASK
-  task<void> connect(std::string_view node, std::string_view service) {
+  task<void> connect(const std::string& node, const std::string& service) {
     auto addr = co_await uv::dns::getaddrinfo(node, service);
 
     co_await connect(addr);
   }
 #endif
 
-  void connect(std::string_view node, short port, std::function<void(uv::error)> cb) {
+  void connect(const std::string& node, short port, std::function<void(uv::error)> cb) {
     connect(node.data(), std::to_string(port).data(), cb);
   }
 
 #ifndef UVPP_NO_TASK
-  task<void> connect(std::string_view node, short port) {
+  task<void> connect(const std::string& node, short port) {
     co_await connect(node, std::to_string(port));
   }
 #endif

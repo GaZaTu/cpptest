@@ -18,39 +18,39 @@ public:
 
     virtual bool next() = 0;
 
-    virtual orm::field_type getValueType(const std::string_view name) = 0;
+    virtual orm::field_type getValueType(const std::string& name) = 0;
 
-    virtual bool isValueNull(const std::string_view name) = 0;
+    virtual bool isValueNull(const std::string& name) = 0;
 
-    virtual void getValue(const std::string_view name, bool& result) = 0;
+    virtual void getValue(const std::string& name, bool& result) = 0;
 
-    virtual void getValue(const std::string_view name, int& result) = 0;
+    virtual void getValue(const std::string& name, int& result) = 0;
 
-    virtual void getValue(const std::string_view name, int64_t& result) = 0;
+    virtual void getValue(const std::string& name, int64_t& result) = 0;
 
 #ifdef __SIZEOF_INT128__
-    virtual void getValue(const std::string_view name, __uint128_t& result) = 0;
+    virtual void getValue(const std::string& name, __uint128_t& result) = 0;
 #endif
 
-    virtual void getValue(const std::string_view name, double& result) = 0;
+    virtual void getValue(const std::string& name, double& result) = 0;
 
-    virtual void getValue(const std::string_view name, std::string& result) = 0;
+    virtual void getValue(const std::string& name, std::string& result) = 0;
 
-    virtual void getValue(const std::string_view name, std::vector<uint8_t>& result) = 0;
+    virtual void getValue(const std::string& name, std::vector<uint8_t>& result) = 0;
 
-    virtual void getValue(const std::string_view name, orm::date& value) {
+    virtual void getValue(const std::string& name, orm::date& value) {
       std::string str;
       getValue(name, str);
       value = str;
     }
 
-    virtual void getValue(const std::string_view name, orm::time& value) {
+    virtual void getValue(const std::string& name, orm::time& value) {
       std::string str;
       getValue(name, str);
       value = str;
     }
 
-    virtual void getValue(const std::string_view name, orm::datetime& value) {
+    virtual void getValue(const std::string& name, orm::datetime& value) {
       std::string str;
       getValue(name, str);
       value = str;
@@ -70,33 +70,33 @@ public:
 
     virtual int executeUpdate() = 0;
 
-    virtual void setParamToNull(const std::string_view name) = 0;
+    virtual void setParamToNull(const std::string& name) = 0;
 
-    virtual void setParam(const std::string_view name, bool value) = 0;
+    virtual void setParam(const std::string& name, bool value) = 0;
 
-    virtual void setParam(const std::string_view name, int value) = 0;
+    virtual void setParam(const std::string& name, int value) = 0;
 
-    virtual void setParam(const std::string_view name, int64_t value) = 0;
+    virtual void setParam(const std::string& name, int64_t value) = 0;
 
 #ifdef __SIZEOF_INT128__
-    virtual void setParam(const std::string_view name, __uint128_t value) = 0;
+    virtual void setParam(const std::string& name, __uint128_t value) = 0;
 #endif
 
-    virtual void setParam(const std::string_view name, double value) = 0;
+    virtual void setParam(const std::string& name, double value) = 0;
 
-    virtual void setParam(const std::string_view name, const std::string_view value) = 0;
+    virtual void setParam(const std::string& name, const std::string_view value) = 0;
 
-    virtual void setParam(const std::string_view name, const std::vector<uint8_t>& value) = 0;
+    virtual void setParam(const std::string& name, const std::vector<uint8_t>& value) = 0;
 
-    virtual void setParam(const std::string_view name, orm::date value) {
+    virtual void setParam(const std::string& name, orm::date value) {
       setParam(name, (std::string)value);
     }
 
-    virtual void setParam(const std::string_view name, orm::time value) {
+    virtual void setParam(const std::string& name, orm::time value) {
       setParam(name, (std::string)value);
     }
 
-    virtual void setParam(const std::string_view name, orm::datetime value) {
+    virtual void setParam(const std::string& name, orm::datetime value) {
       setParam(name, (std::string)value);
     }
 
@@ -122,7 +122,7 @@ public:
 
     virtual void rollback() = 0;
 
-    virtual void execute(const std::string_view script) {
+    virtual void execute(const std::string& script) {
       prepareStatement(script)->execute();
     }
 

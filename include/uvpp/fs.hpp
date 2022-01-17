@@ -101,7 +101,7 @@ void open(std::string_view path, int flags, int mode, std::function<void(uv::fil
 task<uv::file> open(std::string_view path, int flags, int mode, uv_loop_t* native_loop = uv_default_loop()) {
   return task<uv::file>::create([path, flags, mode, native_loop](auto& resolve, auto& reject) {
     uv::fs::open(
-        path.data(), flags, mode,
+        path, flags, mode,
         [&resolve, &reject](auto result, auto error) {
           if (error) {
             reject(make_exception_ptr(error));

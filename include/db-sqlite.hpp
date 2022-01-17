@@ -61,7 +61,7 @@ public:
       }
     }
 
-    orm::field_type getValueType(const std::string_view name) override {
+    orm::field_type getValueType(const std::string& name) override {
       auto native_type = sqlite3_column_type(&*_native_statement, _cols[(std::string)name]);
 
       switch (native_type) {
@@ -73,35 +73,35 @@ public:
       }
     }
 
-    bool isValueNull(const std::string_view name) override {
+    bool isValueNull(const std::string& name) override {
       return sqlite3_column_type(&*_native_statement, _cols[(std::string)name]) == SQLITE_NULL;
     }
 
-    void getValue(const std::string_view name, bool& result) override {
+    void getValue(const std::string& name, bool& result) override {
       result = sqlite3_column_int(&*_native_statement, _cols[(std::string)name]) != 0;
     }
 
-    void getValue(const std::string_view name, int& result) override {
+    void getValue(const std::string& name, int& result) override {
       result = sqlite3_column_int(&*_native_statement, _cols[(std::string)name]);
     }
 
-    void getValue(const std::string_view name, int64_t& result) override {
+    void getValue(const std::string& name, int64_t& result) override {
       result = sqlite3_column_int64(&*_native_statement, _cols[(std::string)name]);
     }
 
 #ifdef __SIZEOF_INT128__
-    void getValue(const std::string_view name, __uint128_t& result) override {
+    void getValue(const std::string& name, __uint128_t& result) override {
       const void* bytes;
       getValue<sizeof(__uint128_t)>(name, &bytes);
       result = *(__uint128_t*)bytes;
     }
 #endif
 
-    void getValue(const std::string_view name, double& result) override {
+    void getValue(const std::string& name, double& result) override {
       result = sqlite3_column_double(&*_native_statement, _cols[(std::string)name]);
     }
 
-    void getValue(const std::string_view name, std::string& result) override {
+    void getValue(const std::string& name, std::string& result) override {
       auto col = _cols[(std::string)name];
       auto text_ptr = sqlite3_column_text(&*_native_statement, col);
       auto byte_count = sqlite3_column_bytes(&*_native_statement, col);
@@ -109,7 +109,7 @@ public:
       result = {reinterpret_cast<const char*>(text_ptr), static_cast<std::string::size_type>(byte_count)};
     }
 
-    void getValue(const std::string_view name, std::vector<uint8_t>& result) override {
+    void getValue(const std::string& name, std::vector<uint8_t>& result) override {
       auto col = _cols[(std::string)name];
       auto blob_ptr = sqlite3_column_blob(&*_native_statement, col);
       auto byte_count = sqlite3_column_bytes(&*_native_statement, col);
@@ -119,7 +119,7 @@ public:
     }
 
     template <std::size_t N>
-    void getValue(const std::string_view name, const void** result) {
+    void getValue(const std::string& name, const void** result) {
       auto col = _cols[(std::string)name];
       auto blob_ptr = sqlite3_column_blob(&*_native_statement, col);
 
@@ -168,7 +168,7 @@ public:
       return sqlite3_changes(&*_native_connection);
     }
 
-    void setParamToNull(const std::string_view name) override {
+    void setParamToNull(const std::string& name) override {
       int index = sqlite3_bind_parameter_index(&*_native_statement, name.data());
 
       if (index != 0) {
@@ -176,7 +176,7 @@ public:
       }
     }
 
-    void setParam(const std::string_view name, bool value) override {
+    void setParam(const std::string& name, bool value) override {
       int index = sqlite3_bind_parameter_index(&*_native_statement, name.data());
 
       if (index != 0) {
@@ -184,7 +184,7 @@ public:
       }
     }
 
-    void setParam(const std::string_view name, int value) override {
+    void setParam(const std::string& name, int value) override {
       int index = sqlite3_bind_parameter_index(&*_native_statement, name.data());
 
       if (index != 0) {
@@ -192,7 +192,7 @@ public:
       }
     }
 
-    void setParam(const std::string_view name, int64_t value) override {
+    void setParam(const std::string& name, int64_t value) override {
       int index = sqlite3_bind_parameter_index(&*_native_statement, name.data());
 
       if (index != 0) {
@@ -201,12 +201,12 @@ public:
     }
 
 #ifdef __SIZEOF_INT128__
-    void setParam(const std::string_view name, __uint128_t value) override {
+    void setParam(const std::string& name, __uint128_t value) override {
       setParam<sizeof(__uint128_t)>(name, (const void*)&value);
     }
 #endif
 
-    void setParam(const std::string_view name, double value) override {
+    void setParam(const std::string& name, double value) override {
       int index = sqlite3_bind_parameter_index(&*_native_statement, name.data());
 
       if (index != 0) {
@@ -214,7 +214,7 @@ public:
       }
     }
 
-    void setParam(const std::string_view name, const std::string_view value) override {
+    void setParam(const std::string& name, const std::string_view value) override {
       int index = sqlite3_bind_parameter_index(&*_native_statement, name.data());
 
       if (index != 0) {
@@ -224,7 +224,7 @@ public:
       }
     }
 
-    void setParam(const std::string_view name, const std::vector<uint8_t>& value) override {
+    void setParam(const std::string& name, const std::vector<uint8_t>& value) override {
       int index = sqlite3_bind_parameter_index(&*_native_statement, name.data());
 
       if (index != 0) {
@@ -235,7 +235,7 @@ public:
     }
 
     template <std::size_t N>
-    void setParam(const std::string_view name, const void* data) {
+    void setParam(const std::string& name, const void* data) {
       int index = sqlite3_bind_parameter_index(&*_native_statement, name.data());
 
       if (index != 0) {
@@ -255,7 +255,7 @@ public:
       _native_connection = {connection, [](sqlite3*) {}};
     }
 
-    connection(const std::string_view filename, int flags) {
+    connection(const std::string& filename, int flags) {
       sqlite3* connection = nullptr;
       sqlite3_error::_assert(sqlite3_open_v2(filename.data(), &connection, flags, nullptr), _native_connection);
 
@@ -285,7 +285,7 @@ public:
       execute("ROLLBACK");
     }
 
-    void execute(const std::string_view script) override {
+    void execute(const std::string& script) override {
       if (onPrepareStatement()) {
         onPrepareStatement()(script);
       }
@@ -696,7 +696,7 @@ std::string getString(sqlite3_value* value) {
 }
 
 void createScalarFunction(
-    db::connection& _conn, std::string_view name, std::function<void(sqlite3*, sqlite3_context*, int, sqlite3_value**)> func) {
+    db::connection& _conn, const std::string& name, std::function<void(sqlite3*, sqlite3_context*, int, sqlite3_value**)> func) {
   auto conn = _conn.getNativeConnection<datasource::connection>();
 
   struct context_t {
