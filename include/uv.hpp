@@ -10,6 +10,7 @@
 #include "./uvpp/loop.hpp"
 #include "./uvpp/misc.hpp"
 #include "./uvpp/req.hpp"
+#include "./uvpp/signal.hpp"
 #include "./uvpp/stream.hpp"
 #include "./uvpp/tcp.hpp"
 #include "./uvpp/threading.hpp"
@@ -17,10 +18,10 @@
 #include "./uvpp/tty.hpp"
 #include "./uvpp/work.hpp"
 
-// #ifndef UVPP_NO_TASK
+// #ifdef UVPP_TASK_INCLUDE
 // namespace uv {
 // void deleteTask(std::function<void()> deleter) {
-//   uv::async::queue(deleter);
+//   uv::async::ssend(deleter);
 // }
 
 // void startTask(task<void>& task) {

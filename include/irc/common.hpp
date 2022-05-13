@@ -2,6 +2,7 @@
 
 #include <regex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace irc {
@@ -53,6 +54,7 @@ end:
 }
 
 namespace regex {
+std::regex join{"^:(\\w+)!\\w+@\\S+ JOIN #(\\w+)"};
 std::regex privmsg{"^:(\\w+)!\\w+@\\S+ PRIVMSG #(\\w+) :"};
 std::regex ping{"^PING :(.*)"};
 std::regex clearchat{"^:\\S+ CLEARCHAT #(\\w+) :(\\w+)"};

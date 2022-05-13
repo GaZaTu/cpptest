@@ -79,20 +79,20 @@ private:
   std::variant<std::string_view, std::string> _raw;
   std::unordered_map<std::string_view, std::string_view> _tags;
 
-  bool _action = false;
-
   struct {
     std::string_view _channel;
     std::string_view _sender;
     std::string_view _message;
   } _views;
 
+  bool _action = false;
+
   void parse() {
     std::string_view data;
     std::tie(data, _tags) = consumeTags((std::string_view)(*this));
 
     std::cmatch match;
-    std::regex_search(data.begin(), data.end(), match, regex::privmsg);
+    std::regex_search(std::begin(data), std::end(data), match, regex::privmsg);
 
     if (match.empty()) {
       if (_raw.index() == STRING) {

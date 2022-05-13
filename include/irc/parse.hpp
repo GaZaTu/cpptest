@@ -1,6 +1,7 @@
 #pragma once
 
 #include "./clearchat.hpp"
+#include "./join.hpp"
 #include "./ping.hpp"
 #include "./privmsg.hpp"
 #include "./reconnect.hpp"
@@ -33,7 +34,7 @@ struct variant_get_index<T, std::variant<Ts...>>
 } // namespace detail
 
 using message =
-    std::variant<unknown, privmsg, ping, clearchat, usernotice, /* userstate, */ roomstate, /* notice, */ reconnect>;
+    std::variant<unknown, privmsg, ping, clearchat, join, usernotice, /* userstate, */ roomstate, /* notice, */ reconnect>;
 
 template <typename T>
 constexpr size_t index_v = detail::variant_get_index<T, message>::value;

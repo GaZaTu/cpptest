@@ -231,7 +231,7 @@ public:
       pushParam(name, (std::string)value, types::_time);
     }
 
-    void setParam(const std::string_view name, orm::datetime value) override {
+    void setParam(const std::string_view name, orm::timestamp value) override {
       pushParam(name, (std::string)value, types::_timestamp);
     }
 
@@ -459,6 +459,7 @@ public:
 
     std::string createSelectScript(const orm::query_builder_data& data) override {
       std::stringstream str;
+      int param = 666;
 
       str << "SELECT ";
 
@@ -479,7 +480,7 @@ public:
           str << " WHERE ";
         }
 
-        data.conditions.at(i)->appendToQuery(str);
+        data.conditions.at(i)->appendToQuery(str, param);
       }
 
       for (size_t i = 0; i < data.ordering.size(); i++) {
@@ -519,6 +520,7 @@ public:
 
     std::string createDeleteScript(const orm::query_builder_data& data) override {
       std::stringstream str;
+      int param = 666;
 
       str << "DELETE FROM " << '"' << data.table << '"';
 
@@ -529,7 +531,7 @@ public:
           str << " WHERE ";
         }
 
-        data.conditions.at(i)->appendToQuery(str);
+        data.conditions.at(i)->appendToQuery(str, param);
       }
 
       return str.str();

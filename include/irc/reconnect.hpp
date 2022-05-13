@@ -51,7 +51,7 @@ private:
     std::string_view data = (std::string_view)(*this);
 
     std::cmatch match;
-    std::regex_search(data.begin(), data.end(), match, regex::reconnect);
+    std::regex_search(std::begin(data), std::end(data), match, regex::reconnect);
 
     if (match.empty()) {
       if (_raw.index() == STRING) {

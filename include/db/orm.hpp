@@ -3,6 +3,7 @@
 #include "./resultset.hpp"
 #include <ostream>
 #include <string>
+#include <set>
 
 namespace db {
 namespace orm {
@@ -14,82 +15,9 @@ struct field_type_converter {
   using decayed = void;
 };
 
-template <>
-struct field_type_converter<bool> {
-  static constexpr field_type type = BOOLEAN;
-  static constexpr bool optional = false;
-};
-
-template <>
-struct field_type_converter<int> {
-  static constexpr field_type type = INT32;
-  static constexpr bool optional = false;
-};
-
-template <>
-struct field_type_converter<int64_t> {
-  static constexpr field_type type = INT64;
-  static constexpr bool optional = false;
-};
-
-#ifdef __SIZEOF_INT128__
-template <>
-struct field_type_converter<__uint128_t> {
-  static constexpr field_type type = UINT128;
-  static constexpr bool optional = false;
-};
-#endif
-
-template <>
-struct field_type_converter<double> {
-  static constexpr field_type type = DOUBLE;
-  static constexpr bool optional = false;
-};
-
-template <>
-struct field_type_converter<std::string> {
-  static constexpr field_type type = STRING;
-  static constexpr bool optional = false;
-};
-
-template <>
-struct field_type_converter<std::vector<uint8_t>> {
-  static constexpr field_type type = BLOB;
-  static constexpr bool optional = false;
-};
-
-// template <>
-// struct field_type_converter<std::time_t> {
-//   static constexpr field_type type = DATETIME;
-//   static constexpr bool optional = false;
-// };
-
-// template <>
-// struct field_type_converter<std::chrono::system_clock::time_point> {
-//   static constexpr field_type type = DATETIME;
-//   static constexpr bool optional = false;
-// };
-
-template <>
-struct field_type_converter<db::orm::date> {
-  static constexpr field_type type = DATE;
-  static constexpr bool optional = false;
-};
-
-template <>
-struct field_type_converter<db::orm::time> {
-  static constexpr field_type type = TIME;
-  static constexpr bool optional = false;
-};
-
-template <>
-struct field_type_converter<db::orm::datetime> {
-  static constexpr field_type type = DATETIME;
-  static constexpr bool optional = false;
-};
-
 template <typename T>
-struct field_type_converter<std::optional<T>> : public field_type_converter<T> {
+struct field_type_converter<std::optional<T>> {
+  static constexpr field_type type = field_type_converter<T>::type;
   static constexpr bool optional = true;
 
   using decayed = T;
@@ -101,12 +29,22 @@ struct is_condition_or_field {
 };
 
 template <typename T>
-struct is_std_vector {
+struct is_std_set {
   static constexpr bool value = false;
 };
 
 template <typename T>
-struct is_std_vector<std::vector<T>> {
+struct is_std_set<std::set<T>> {
+  static constexpr bool value = true;
+};
+
+template <typename T>
+struct is_std_function {
+  static constexpr bool value = false;
+};
+
+template <typename T>
+struct is_std_function<std::function<T>> {
   static constexpr bool value = true;
 };
 
@@ -132,18 +70,38 @@ struct condition : public condition_container {
 
   template <typename _L, condition_operator _O, typename _R>
   constexpr condition<condition, condition_operator::AND, condition<_L, _O, _R>> operator&&(
-      condition<_L, _O, _R> right) {
+      condition<_L, _O, _R>&& right) {
     return {std::move(*this), std::move(right)};
   }
 
   template <typename _L, condition_operator _O, typename _R>
   constexpr condition<condition, condition_operator::OR, condition<_L, _O, _R>> operator||(
-      condition<_L, _O, _R> right) {
+      condition<_L, _O, _R>&& right) {
     return {std::move(*this), std::move(right)};
   }
 
   constexpr condition<std::nullopt_t, condition_operator::NOT, condition> operator!() {
     return {std::nullopt, std::move(*this)};
+  }
+
+  template <typename T>
+  constexpr condition<condition, condition_operator::EQUALS, T> operator==(const T& right) const {
+    return {std::move(*this), right};
+  }
+
+  template <typename T>
+  constexpr condition<condition, condition_operator::EQUALS, T> operator==(T&& right) const {
+    return {std::move(*this), std::move(right)};
+  }
+
+  template <typename T>
+  constexpr condition<condition, condition_operator::NOT_EQUALS, T> operator!=(const T& right) const {
+    return {std::move(*this), right};
+  }
+
+  template <typename T>
+  constexpr condition<condition, condition_operator::NOT_EQUALS, T> operator!=(T&& right) const {
+    return {std::move(*this), std::move(right)};
   }
 
   condition_operator getOperator() const override {
@@ -152,7 +110,11 @@ struct condition : public condition_container {
 
   void appendLeftToQuery(std::ostream& os, int& i) const override {
     if constexpr ((O | condition_operator::CUSTOM) == condition_operator::CUSTOM) {
-      os << left;
+      if constexpr (is_std_function<R>::value) {
+        left(os, i);
+      } else {
+        os << left;
+      }
     } else if constexpr (O == condition_operator::NOT) {
     } else {
       left.appendToQuery(os, i);
@@ -165,7 +127,7 @@ struct condition : public condition_container {
     } else {
       if constexpr (std::is_same<R, std::nullopt_t>::value) {
       } else if constexpr ((O | condition_operator::CUSTOM) == condition_operator::CUSTOM) {
-      } else if constexpr (is_std_vector<R>::value) {
+      } else if constexpr (is_std_set<R>::value) {
         auto start = i;
         os << "(";
         for (const auto& item : right) {
@@ -209,13 +171,17 @@ struct condition : public condition_container {
     } else {
       if constexpr (std::is_same<R, std::nullopt_t>::value) {
       } else if constexpr ((O | condition_operator::CUSTOM) == condition_operator::CUSTOM) {
-        statement.params[right.name] = right.value;
-      } else if constexpr (is_std_vector<R>::value) {
+        if constexpr (is_std_function<R>::value) {
+          right(statement, i);
+        } else {
+          statement.params[right.name] = right.value;
+        }
+      } else if constexpr (is_std_set<R>::value) {
         for (const auto& item : right) {
-          statement.params[std::string{":"} + std::to_string(i++)] = item;
+          statement.params[std::string{":"} + std::to_string(i++)] = std::move(item);
         }
       } else {
-        statement.params[std::string{":"} + std::to_string(i++)] = right;
+        statement.params[std::string{":"} + std::to_string(i++)] = std::move(right);
       }
     }
   }
@@ -224,8 +190,18 @@ struct condition : public condition_container {
 template <typename T>
 struct field {
   const char* name;
+  const char* source = "";
 
   constexpr condition<field, condition_operator::ASSIGNMENT, T> operator=(const T& right) const {
+    return {*this, right};
+  }
+
+  constexpr condition<field, condition_operator::ASSIGNMENT, T> operator=(T&& right) const {
+    return {*this, std::move(right)};
+  }
+
+  template <typename T2>
+  constexpr condition<field, condition_operator::ASSIGNMENT, field<T2>> operator=(const field<T2>& right) const {
     return {*this, right};
   }
 
@@ -233,7 +209,12 @@ struct field {
     return {*this, right};
   }
 
-  constexpr condition<field, condition_operator::IS_NULL, std::nullopt_t> operator==(std::nullopt_t right) const {
+  constexpr condition<field, condition_operator::EQUALS, T> operator==(T&& right) const {
+    return {*this, std::move(right)};
+  }
+
+  template <typename T2>
+  constexpr condition<field, condition_operator::EQUALS, field<T2>> operator==(const field<T2>& right) const {
     return {*this, right};
   }
 
@@ -241,7 +222,12 @@ struct field {
     return {*this, right};
   }
 
-  constexpr condition<field, condition_operator::IS_NOT_NULL, std::nullopt_t> operator!=(std::nullopt_t right) const {
+  constexpr condition<field, condition_operator::NOT_EQUALS, T> operator!=(T&& right) const {
+    return {*this, std::move(right)};
+  }
+
+  template <typename T2>
+  constexpr condition<field, condition_operator::NOT_EQUALS, field<T2>> operator!=(const field<T2>& right) const {
     return {*this, right};
   }
 
@@ -261,8 +247,12 @@ struct field {
     return {*this, right};
   }
 
-  constexpr condition<field, condition_operator::IN, std::vector<T>> IN(const std::vector<T>& right) const {
+  constexpr condition<field, condition_operator::IN, std::set<T>> IN(const std::set<T>& right) const {
     return {*this, right};
+  }
+
+  constexpr condition<field, condition_operator::IN, std::set<T>> IN(std::set<T>&& right) const {
+    return {*this, std::move(right)};
   }
 
   constexpr operator condition<field, condition_operator::EQUALS, bool>() const {
@@ -273,21 +263,25 @@ struct field {
     return *this == false;
   }
 
-  void appendToQuery(std::ostream& os, int&) const {
-    os << name;
+  inline void appendToQuery(std::ostream& os, int&) const {
+    if (source != nullptr && source != "") {
+      os << source << '.';
+    }
+
+    os << '"' << name << '"';
   }
 
-  operator const char*() {
-    return name;
-  }
+  // operator const char*() {
+  //   return name;
+  // }
 
-  operator std::string() {
-    return name;
-  }
+  // operator std::string() {
+  //   return name;
+  // }
 
-  operator std::string_view() {
-    return name;
-  }
+  // operator std::string_view() {
+  //   return name;
+  // }
 };
 
 template <typename L, condition_operator O, typename R>
@@ -310,205 +304,322 @@ struct fields {
 };
 
 template <typename T>
+struct param {
+  const char* name;
+  T value;
+};
+
+struct query {
+  std::string code;
+
+  query(std::string&& code) {
+    this->code = std::move(code);
+  }
+
+  query(const char* code) {
+    this->code = code;
+  }
+
+  template <typename T = std::nullopt_t>
+  constexpr condition<std::string, condition_operator::CUSTOM, std::nullopt_t> asCondition() const {
+    return {std::move(code), std::nullopt};
+  }
+
+  template <typename T>
+  constexpr condition<std::string, condition_operator::CUSTOM, param<T>> bind(const char* name, T&& value) const {
+    return {std::move(code), param<T>{name, std::move(value)}};
+  }
+};
+
+// struct dynamic_field {
+//   const char* name;
+
+//   template <typename T>
+//   constexpr condition<field<T>, condition_operator::ASSIGNMENT, T> operator=(const T& right) const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T>
+//   constexpr condition<field<T>, condition_operator::EQUALS, T> operator==(const T& right) const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T = std::nullopt_t>
+//   constexpr condition<field<T>, condition_operator::IS_NULL, std::nullopt_t> operator==(std::nullopt_t right) const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T>
+//   constexpr condition<field<T>, condition_operator::NOT_EQUALS, T> operator!=(const T& right) const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T = std::nullopt_t>
+//   constexpr condition<field<T>, condition_operator::IS_NOT_NULL, std::nullopt_t> operator!=(std::nullopt_t right)
+//   const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T>
+//   constexpr condition<field<T>, condition_operator::LOWER_THAN, T> operator<(const T& right) const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T>
+//   constexpr condition<field<T>, condition_operator::LOWER_THAN_EQUALS, T> operator<=(const T& right) const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T>
+//   constexpr condition<field<T>, condition_operator::GREATER_THAN, T> operator>(const T& right) const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T>
+//   constexpr condition<field<T>, condition_operator::GREATER_THAN_EQUALS, T> operator>=(const T& right) const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T>
+//   constexpr condition<field<T>, condition_operator::IN, std::set<T>> IN(const std::set<T>& right) const {
+//     return {field<T>{name}, right};
+//   }
+
+//   template <typename T = bool>
+//   constexpr operator condition<field<T>, condition_operator::EQUALS, bool>() const {
+//     return field<T>{name} == true;
+//   }
+
+//   template <typename T = bool>
+//   constexpr condition<field<T>, condition_operator::EQUALS, bool> operator!() const {
+//     return field<T>{name} == false;
+//   }
+// };
+
+namespace literals {
+// constexpr inline db::orm::dynamic_field operator ""_f(const char* name, std::size_t) {
+//   return {name};
+// }
+
+inline db::orm::query operator""_q(const char* code, std::size_t) {
+  return {code};
+}
+} // namespace literals
+
+template <typename T>
+class selection_iterator {
+public:
+  explicit selection_iterator(db::resultset::iterator&& it) : _it(it) {
+  }
+
+  selection_iterator(const selection_iterator&) = default;
+
+  selection_iterator(selection_iterator&&) = default;
+
+  selection_iterator& operator=(const selection_iterator&) = default;
+
+  selection_iterator& operator=(selection_iterator&&) = default;
+
+  selection_iterator& operator++() {
+    _it++;
+    return *this;
+  }
+
+  selection_iterator operator++(int) {
+    return selection_iterator{++_it};
+  }
+
+  bool operator==(const selection_iterator& other) const {
+    return _it == other._it;
+  }
+
+  bool operator!=(const selection_iterator& other) const {
+    return _it != other._it;
+  }
+
+  T& operator*() {
+    db::orm::meta<T>::deserialize(*_it, _value);
+    return _value;
+  }
+
+private:
+  db::resultset::iterator _it;
+
+  T _value;
+};
+
+template <typename T>
+class selection_iterable {
+public:
+  explicit selection_iterable(db::statement& stmt) : _rslt{stmt} {
+  }
+
+  selection_iterator<T> begin() {
+    return selection_iterator<T>{_rslt.begin()};
+  }
+
+  selection_iterator<T> end() {
+    return selection_iterator<T>{_rslt.end()};
+  }
+
+  std::vector<T> toVector() {
+    std::vector<T> result;
+    for (T& value : *this) {
+      result.push_back(std::move(value));
+    }
+    return result;
+  }
+
+private:
+  db::resultset _rslt;
+};
+
 class selector {
 public:
-  using meta = db::orm::meta<T>;
-
   class joiner {
   public:
     friend selector;
 
-    joiner(selector& s, query_builder_data::join_on_clause& d) : _selector(s), _data(d) {}
+    joiner(selector& s, query_builder_data::join_on_clause& d);
 
-    selector& on(std::string_view condition) {
-      _data.condition = condition;
+    joiner& inner();
+
+    joiner& left();
+
+    joiner& cross();
+
+    template <typename L, condition_operator O, typename R>
+    selector& on(db::orm::condition<L, O, R>&& condition) {
+      _data.condition =
+          std::make_shared<db::orm::condition<L, O, R>>(std::move(condition.left), std::move(condition.right));
 
       return _selector;
     }
+
+    selector& on(db::orm::query&& condition);
+
+    selector& always();
 
   private:
     selector& _selector;
     query_builder_data::join_on_clause& _data;
   };
 
-  selector(db::connection& connection) : _connection(connection) {
+  selector(db::connection& connection);
+
+  selector& select();
+
+  selector& select(const std::vector<selection>& fields);
+
+  selector& distinct(bool distinct = true);
+
+  selector& from(std::string_view table, std::string_view alias = "");
+
+  template <typename C>
+  selector& from(const db::orm::fields<C>& f = "") {
+    return from(db::orm::fields<C>::class_name, f.__alias);
   }
 
-  selector& select() {
-    _data.fields.clear();
+  joiner& join(std::string_view table, std::string_view alias = "");
 
-    if constexpr (meta::specialized) {
-      for (const auto& existing : meta::class_members) {
-        _data.fields.push_back(existing.name);
-      }
-    } else {
-      _data.fields.push_back("*");
-    }
-
-    return *this;
-  }
-
-  selector& select(const std::vector<selection>& fields) {
-    _data.fields.clear();
-
-    for (const auto& field : fields) {
-      assertFieldExists(field.name);
-
-      _data.fields.push_back(field);
-    }
-
-    return *this;
-  }
-
-  selector& columns(const std::vector<selection>& fields) {
-    return select(fields);
-  }
-
-  selector& from(std::string_view table, std::string_view alias = "") {
-    _data.table.name = table;
-    _data.table.alias = alias;
-
-    return *this;
-  }
-
-  joiner& join(std::string_view table, std::string_view alias = "") {
-    auto& join = _data.joins.emplace_back();
-    join.table.name = table;
-    join.table.alias = alias;
-
-    if (!_joiner) {
-      _joiner = std::make_shared<joiner>(*this, join);
-    } else {
-      _joiner->_data = join;
-    }
-
-    return *_joiner;
+  template <typename C>
+  joiner& join(const db::orm::fields<C>& f = "") {
+    return join(db::orm::fields<C>::class_name, f.__alias);
   }
 
   template <typename L, condition_operator O, typename R>
   selector& where(db::orm::condition<L, O, R>&& condition) {
-    auto ptr = std::make_shared<db::orm::condition<L, O, R>>(std::move(condition.left), std::move(condition.right));
+    if (!_push_next) {
+      _push_next = true;
+      return *this;
+    }
 
+    auto ptr = std::make_shared<db::orm::condition<L, O, R>>(std::move(condition.left), std::move(condition.right));
     _data.conditions.push_back(ptr);
 
     return *this;
   }
 
-  selector& orderBy(const std::string_view field, order_by_direction direction = DIRECTION_DEFAULT,
-      order_by_nulls nulls = NULLS_DEFAULT) {
-    assertFieldExists(field);
+  selector& where(db::orm::query&& condition);
 
-    _data.ordering.emplace_back(field, direction, nulls);
+  selector& groupBy(std::string_view field);
 
-    return *this;
+  template <typename F>
+  selector& groupBy(db::orm::field<F> field) {
+    return groupBy(field.name);
   }
 
-  selector& limit(int limit) {
-    _data.limit = limit;
-
-    return *this;
-  }
-
-  void prepare(db::statement& statement) {
-    if constexpr (meta::specialized) {
-      _data.table = meta::class_name;
-    }
-
-    std::string script = _connection._datasource_connection->createSelectScript(_data);
-    statement.prepare(script);
-
-    for (auto condition : _data.conditions) {
-      condition->assignToParams(statement);
-    }
-  }
-
-  class iterator {
-  public:
-    explicit iterator(db::resultset::iterator&& it) : _it(it) {}
-
-    iterator(const iterator&) = default;
-
-    iterator(iterator&&) = default;
-
-    iterator& operator=(const iterator&) = default;
-
-    iterator& operator=(iterator&&) = default;
-
-    iterator& operator++() {
-      _it++;
+  template <typename L, condition_operator O, typename R>
+  selector& having(db::orm::condition<L, O, R>&& condition) {
+    if (!_push_next) {
+      _push_next = true;
       return *this;
     }
 
-    iterator operator++(int) {
-      return iterator{++_it};
-    }
+    auto ptr = std::make_shared<db::orm::condition<L, O, R>>(std::move(condition.left), std::move(condition.right));
+    _data.having_conditions.push_back(ptr);
 
-    bool operator==(const iterator& other) const {
-      return _it == other._it;
-    }
-
-    bool operator!=(const iterator& other) const {
-      return _it != other._it;
-    }
-
-    T operator*() {
-      T value;
-      meta::deserialize(*_it, value);
-      return value;
-    }
-
-  private:
-    db::resultset::iterator _it;
-  };
-
-  class iterable {
-  public:
-    explicit iterable(db::statement& stmt) : _rslt(stmt) {}
-
-    iterator begin() {
-      return iterator{_rslt.begin()};
-    }
-
-    iterator end() {
-      return iterator{_rslt.end()};
-    }
-
-    std::vector<T> toVector() {
-      return {begin(), end()};
-    }
-
-  private:
-    db::resultset _rslt;
-  };
-
-  using findall_result = std::conditional_t<meta::specialized, iterable, db::resultset>;
-
-  findall_result findAll() {
-    db::statement statement(_connection);
-    prepare(statement);
-
-    if constexpr (std::is_same_v<findall_result, db::resultset>) {
-      return db::resultset{statement};
-    } else {
-      return iterable{statement};
-    }
+    return *this;
   }
 
-  using findone_result = std::conditional_t<meta::specialized, std::optional<T>, db::resultset>;
+  selector& having(db::orm::query&& condition);
 
-  findone_result findOne() {
+  selector& orderBy(
+      std::string_view field, order_by_direction direction = DIRECTION_DEFAULT, order_by_nulls nulls = NULLS_DEFAULT);
+
+  template <typename F>
+  selector& orderBy(
+      db::orm::field<F> field, order_by_direction direction = DIRECTION_DEFAULT, order_by_nulls nulls = NULLS_DEFAULT) {
+    return orderBy(field.name, direction, nulls);
+  }
+
+  selector& offset(uint32_t offset);
+
+  selector& limit(uint32_t limit);
+
+  template <typename T>
+  selector& bind(const char* name, T&& value) {
+    using Condition = db::orm::condition<std::string, db::orm::condition_operator::CUSTOM, db::orm::param<T>>;
+
+    auto ptr = std::make_shared<Condition>("", db::orm::param<T>{name, std::move(value)});
+    _params.push_back(ptr);
+
+    return *this;
+  }
+
+  void prepare(db::statement& statement);
+
+  db::resultset findMany();
+
+  template <typename C>
+  selection_iterable<C> findMany(const db::orm::fields<C>& f = "") {
+    selectClassFields<C>();
+
+    db::statement statement{_connection};
+    prepare(statement);
+    return selection_iterable<C>{statement};
+  }
+
+  db::resultset findOne();
+
+  template <typename C>
+  std::optional<C> findOne(const db::orm::fields<C>& f = "") {
+    selectClassFields<C>();
+
     _data.limit = 1;
 
-    if constexpr (std::is_same_v<findone_result, db::resultset>) {
-      return findAll();
-    } else {
-      for (auto row : findAll()) {
-        return {std::move(row)};
-      }
-
-      return {};
+    for (auto row : findMany<C>()) {
+      return {std::move(row)};
     }
+
+    return std::nullopt;
   }
+
+  // selector& pushNextIf(bool push_next);
+
+  condition<std::function<void(std::ostream&, int&)>, condition_operator::CUSTOM,
+      std::function<void(db::statement&, int&)>>
+  exists(const char* name, bool value);
 
 private:
   db::connection& _connection;
@@ -516,84 +627,60 @@ private:
 
   std::shared_ptr<joiner> _joiner;
 
-  void assertFieldExists(const std::string_view field) {
-    if constexpr (meta::specialized) {
-      for (const auto& existing : meta::class_members) {
-        if (field == existing.name) {
-          return;
+  std::vector<std::shared_ptr<db::orm::condition_container>> _params;
+
+  bool _push_next = true;
+
+  template <typename C>
+  void selectClassFields() {
+    if (_data.table.name == db::orm::meta<C>::class_name) {
+      for (const auto& existing : db::orm::meta<C>::class_members) {
+        if (_data.table.alias.empty()) {
+          _data.fields.push_back('"' + std::string{existing.name} + '"');
+        } else {
+          _data.fields.push_back(_data.table.alias + '.' + '"' + std::string{existing.name} + '"');
         }
       }
-
-      throw db::sql_error{"invalid field"};
     }
   }
 };
 
-template <typename T>
 class updater {
 public:
-  using meta = db::orm::meta<T>;
-
   // friend db::orm::inserter;
 
-  updater(db::connection& connection) : _connection(connection) {
-  }
+  updater(db::connection& connection);
 
-  updater& in(std::string_view table, std::string_view alias = "") {
-    _data.table.name = table;
-    _data.table.alias = alias;
+  updater& in(std::string_view table, std::string_view alias = "");
 
-    return *this;
+  template <typename C>
+  updater& in(const db::orm::fields<C>& f = "") {
+    return in(db::orm::fields<C>::class_name, f.__alias);
   }
 
   template <typename L, db::orm::condition_operator O, typename R>
-  updater& set(db::orm::condition<L, O, R>&& condition) {
-    auto ptr = std::make_shared<db::orm::condition<L, O, R>>(std::move(condition.left), std::move(condition.right));
-
+  updater& set(db::orm::condition<L, O, R>&& assignment) {
+    auto ptr = std::make_shared<db::orm::condition<L, O, R>>(std::move(assignment.left), std::move(assignment.right));
     _data.assignments.push_back(ptr);
 
     return *this;
   }
 
+  updater& set(db::orm::query&& query);
+
   template <typename L, db::orm::condition_operator O, typename R>
   updater& where(db::orm::condition<L, O, R>&& condition) {
     auto ptr = std::make_shared<db::orm::condition<L, O, R>>(std::move(condition.left), std::move(condition.right));
-
     _data.conditions.push_back(ptr);
 
     return *this;
   }
 
-  void prepare(db::statement& statement) {
-    if (!_prepare) {
-      if constexpr (meta::specialized) {
-        _data.table = meta::class_name;
-      }
+  updater& where(db::orm::query&& query);
 
-      std::string script = _connection._datasource_connection->createUpdateScript(_data);
-      statement.prepare(script);
-    }
+  void prepare(db::statement& statement);
 
-    int param = 666;
-    if (_prepare) {
-      param = _prepare(statement);
-    }
-
-    for (auto assignment : _data.assignments) {
-      assignment->assignToParams(statement, param);
-    }
-
-    for (auto condition : _data.conditions) {
-      condition->assignToParams(statement, param);
-    }
-  }
-
-  int executeUpdate() {
-    db::statement statement(_connection);
-    prepare(statement);
-
-    return statement.executeUpdate();
-  }
+  int executeUpdate();
 
 private:
   db::connection& _connection;
@@ -602,95 +689,47 @@ private:
   std::function<int(db::statement&)> _prepare;
 };
 
-template <typename T>
 class inserter {
 public:
-  using meta = db::orm::meta<T>;
-
   class on_conflict {
   public:
-    on_conflict(inserter& i) : _inserter(i), _updater(i._connection) {}
+    on_conflict(inserter& i);
 
-    inserter& doNothing() {
-      _inserter._data.upsert = db::orm::query_builder_data::NOTHING;
+    inserter& doNothing();
 
-      return _inserter;
-    }
+    inserter& doReplace();
 
-    inserter& doReplace() {
-      _inserter._data.upsert = db::orm::query_builder_data::REPLACE;
-
-      return _inserter;
-    }
-
-    // updater<T>& doUpdate() {
-    //   _inserter._data.upsert = db::orm::query_builder_data::UPDATE;
-
-    //   _updater._prepare = std::bind(inserter::prepare, _inserter);
-    //   return _updater;
-    // }
+    // updater<T>& doUpdate();
 
   private:
     inserter& _inserter;
-    updater<T> _updater;
+    // updater<T> _updater;
   };
 
-  inserter(db::connection& connection) : _connection(connection) {
-  }
+  inserter(db::connection& connection);
 
-  inserter& into(std::string_view table) {
-    _data.table = table;
+  inserter& into(std::string_view table);
 
-    return *this;
+  template <typename C>
+  inserter& into(const db::orm::fields<C>& f = "") {
+    return into(db::orm::fields<C>::class_name);
   }
 
   template <typename L, db::orm::condition_operator O, typename R>
-  inserter& set(db::orm::condition<L, O, R>&& condition) {
-    auto ptr = std::make_shared<db::orm::condition<L, O, R>>(std::move(condition.left), std::move(condition.right));
-
+  inserter& set(db::orm::condition<L, O, R>&& assignment) {
+    auto ptr = std::make_shared<db::orm::condition<L, O, R>>(std::move(assignment.left), std::move(assignment.right));
     _data.assignments.push_back(ptr);
 
     return *this;
   }
 
-  on_conflict& onConflict(const std::vector<std::string>& fields) {
-    _data.fields.clear();
-    for (const auto& field : fields) {
-      _data.fields.push_back({field});
-    }
+  inserter& set(db::orm::query&& query);
 
-    return _on_conflict;
-  }
+  on_conflict& onConflict(const std::vector<std::string>& fields);
 
-  int prepare(db::statement& statement) {
-    if constexpr (meta::specialized) {
-      _data.table = meta::class_name;
-    }
+  int prepare(db::statement& statement);
 
-    std::string script;
-    if (_data.upsert == db::orm::query_builder_data::DISABLED) {
-      script = _connection._datasource_connection->createInsertScript(_data);
-    } else {
-      script = _connection._datasource_connection->createUpsertScript(_data);
-    }
-
-    statement.prepare(script);
-
-    int param = 666;
-
-    for (auto assignment : _data.assignments) {
-      assignment->assignToParams(statement, param);
-    }
-
-    return param;
-  }
-
-  int executeUpdate() {
-    db::statement statement(_connection);
-    prepare(statement);
-
-    return statement.executeUpdate();
-  }
+  int executeUpdate();
 
 private:
   db::connection& _connection;
@@ -699,193 +738,43 @@ private:
   on_conflict _on_conflict{*this};
 };
 
-template <typename T>
 class deleter {
 public:
-  using meta = db::orm::meta<T>;
+  deleter(db::connection& connection);
 
-  deleter(db::connection& connection) : _connection(connection) {
-  }
+  deleter& from(std::string_view table, std::string_view alias = "");
 
-  deleter& from(std::string_view table, std::string_view alias = "") {
-    _data.table.name = table;
-    _data.table.alias = alias;
-
-    return *this;
+  template <typename C>
+  deleter& from(const db::orm::fields<C>& f = "") {
+    return from(db::orm::fields<C>::class_name, f.__alias);
   }
 
   template <typename L, condition_operator O, typename R>
   deleter& where(db::orm::condition<L, O, R>&& condition) {
     auto ptr = std::make_shared<db::orm::condition<L, O, R>>(std::move(condition.left), std::move(condition.right));
-
     _data.conditions.push_back(ptr);
 
     return *this;
   }
 
-  void prepare(db::statement& statement) {
-    if constexpr (meta::specialized) {
-      _data.table = meta::class_name;
-    }
+  deleter& where(db::orm::query&& query);
 
-    std::string script = _connection._datasource_connection->createDeleteScript(_data);
-    statement.prepare(script);
+  void prepare(db::statement& statement);
 
-    for (auto condition : _data.conditions) {
-      condition->assignToParams(statement);
-    }
-  }
-
-  int executeUpdate() {
-    db::statement statement(_connection);
-    prepare(statement);
-
-    return statement.executeUpdate();
-  }
+  int executeUpdate();
 
 private:
   db::connection& _connection;
   db::orm::query_builder_data _data;
 };
 
-template <typename T>
-struct param {
-  const char* name;
-  T value;
-};
-
-struct query {
-  std::string query;
-
-  template <typename T = std::nullopt_t>
-  constexpr operator condition<std::string, condition_operator::CUSTOM, std::nullopt_t>() const {
-    return {std::move(query), std::nullopt};
-  }
-
-  template <typename T>
-  constexpr condition<std::string, condition_operator::CUSTOM, param<T>> operator<<(param<T>&& p) const {
-    return {std::move(query), std::move(p)};
-  }
-
-  template <typename T>
-  constexpr condition<std::string, condition_operator::CUSTOM, param<T>> bind(const char* name, T&& value) const {
-    return *this << param<T>{name, value};
-  }
-
-  template <typename T = std::nullopt_t>
-  constexpr condition<std::string, condition_operator::CUSTOM, std::nullopt_t> asCondition() const {
-    return *this;
-  }
-};
-
-namespace literals {
-struct dynamic_field {
-  const char* name;
-
-  template <typename T>
-  constexpr condition<field<T>, condition_operator::ASSIGNMENT, T> operator=(const T& right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T>
-  constexpr condition<field<T>, condition_operator::EQUALS, T> operator==(const T& right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T = std::nullopt_t>
-  constexpr condition<field<T>, condition_operator::IS_NULL, std::nullopt_t> operator==(std::nullopt_t right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T>
-  constexpr condition<field<T>, condition_operator::NOT_EQUALS, T> operator!=(const T& right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T = std::nullopt_t>
-  constexpr condition<field<T>, condition_operator::IS_NOT_NULL, std::nullopt_t> operator!=(std::nullopt_t right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T>
-  constexpr condition<field<T>, condition_operator::LOWER_THAN, T> operator<(const T& right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T>
-  constexpr condition<field<T>, condition_operator::LOWER_THAN_EQUALS, T> operator<=(const T& right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T>
-  constexpr condition<field<T>, condition_operator::GREATER_THAN, T> operator>(const T& right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T>
-  constexpr condition<field<T>, condition_operator::GREATER_THAN_EQUALS, T> operator>=(const T& right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T>
-  constexpr condition<field<T>, condition_operator::IN, std::vector<T>> IN(const std::vector<T>& right) const {
-    return {field<T>{name}, right};
-  }
-
-  template <typename T = bool>
-  constexpr operator condition<field<T>, condition_operator::EQUALS, bool>() const {
-    return field<T>{name} == true;
-  }
-
-  template <typename T = bool>
-  constexpr condition<field<T>, condition_operator::EQUALS, bool> operator!() const {
-    return field<T>{name} == false;
-  }
-};
-
-constexpr dynamic_field operator ""_f(const char* name, std::size_t) {
-  return {name};
-}
-
-db::orm::query operator ""_q(const char* code, std::size_t) {
-  return {code};
-}
-}
-
 namespace detail {
-template<class... Ts>
-std::tuple<Ts const&...> ctie(Ts&... vs){
+template <class... Ts>
+std::tuple<Ts const&...> ctie(Ts&... vs) {
   return std::tie(std::cref(vs)...);
 }
-}
+} // namespace detail
 } // namespace orm
-
-orm::selector<std::nullopt_t> connection::select() {
-  orm::selector<std::nullopt_t> builder{*this};
-  builder.select();
-  return builder;
-}
-
-orm::selector<std::nullopt_t> connection::select(const std::vector<orm::selection>& fields) {
-  orm::selector<std::nullopt_t> builder{*this};
-  builder.select(fields);
-  return builder;
-}
-
-orm::inserter<std::nullopt_t> connection::insert() {
-  orm::inserter<std::nullopt_t> builder{*this};
-  return builder;
-}
-
-orm::updater<std::nullopt_t> connection::update() {
-  orm::updater<std::nullopt_t> builder{*this};
-  return builder;
-}
-
-orm::deleter<std::nullopt_t> connection::remove() {
-  orm::deleter<std::nullopt_t> builder{*this};
-  return builder;
-}
 } // namespace db
 
 #ifndef FOR_EACH
@@ -934,11 +823,23 @@ orm::deleter<std::nullopt_t> connection::remove() {
 
 #define DB_ORM_SERIALIZER_STATEMENT_SET(FIELD) statement.params[":" #FIELD] = source.FIELD;
 
-#define DB_ORM_SERIALIZER_STATEMENT_BY_I_SET(FIELD) statement.params[std::string{":"} + std::to_string(i++)] = source.FIELD;
+#define DB_ORM_SERIALIZER_STATEMENT_BY_I_SET(FIELD)                    \
+  if (std::find(fields.begin(), fields.end(), #FIELD) != fields.end()) \
+    statement.params[std::string{":"} + std::to_string(i++)] = source.FIELD;
 
 #define DB_ORM_DESERIALIZER_RESULTSET_GET(FIELD) resultset.get(#FIELD, result.FIELD);
 
-#define DB_ORM_FIELD_INIT(FIELD) static constexpr db::orm::field<decltype(class_type::FIELD)> FIELD{#FIELD};
+#define DB_ORM_FIELD_CHANGES(FIELD)   \
+  if (source.FIELD != original.FIELD) \
+    result.push_back(#FIELD);
+
+#define DB_ORM_FIELD_INIT(FIELD) db::orm::field<decltype(class_type::FIELD)> FIELD{#FIELD};
+
+#define DB_ORM_FIELD_HAS(FIELD) \
+  if (field == #FIELD)          \
+    return true;
+
+#define DB_ORM_FIELD_SET_SOURCE(FIELD) FIELD.source = source;
 
 #define DB_ORM_PRIMARY_KEY_FIELD_TYPE_IN_TUPLE(FIELD) , decltype(class_type::FIELD)
 
@@ -946,73 +847,80 @@ orm::deleter<std::nullopt_t> connection::remove() {
 
 #define DB_ORM_STRINGIFY_TYPE_FIELD(FIELD) os << "  ." << #FIELD << " = " << obj.FIELD << std::endl;
 
-#define DB_ORM_PRIMARY_KEY(TYPE, FIELD0, ...)                                                              \
-  namespace db::orm {                                                                                            \
-  template <>                                                                                                    \
-  struct primary<TYPE> {                                                                                         \
-    using class_type = TYPE;                                                                                     \
-    using tuple_type =                                                                                           \
-        std::tuple<decltype(class_type::FIELD0) __VA_OPT__(FOR_EACH(DB_ORM_PRIMARY_KEY_FIELD_TYPE_IN_TUPLE, __VA_ARGS__))>;       \
-                                                                                                                 \
-    static constexpr bool specialized = true;                                                                    \
-    static constexpr db::orm::field_info class_members[] = {DB_ORM_STRINGIFY_META_FIELD(FIELD0) __VA_OPT__(FOR_EACH(DB_ORM_STRINGIFY_META_FIELD, __VA_ARGS__))}; \
-                                                                                                                 \
-    static auto tie(TYPE& source) {                                                                              \
-      return std::tie(source.FIELD0 __VA_OPT__(FOR_EACH(DB_ORM_PRIMARY_KEY_GET_FIRST_ARG_IN_ARRAY_APPEND, __VA_ARGS__)));         \
-    }                                                                                                            \
-  };                                                                                                             \
+#define DB_ORM_PRIMARY_KEY(TYPE, FIELD0, ...)                                                                 \
+  namespace db::orm {                                                                                         \
+  template <>                                                                                                 \
+  struct primary<TYPE> {                                                                                      \
+    using class_type = TYPE;                                                                                  \
+    using tuple_type = std::tuple<decltype(class_type::FIELD0) __VA_OPT__(                                    \
+        FOR_EACH(DB_ORM_PRIMARY_KEY_FIELD_TYPE_IN_TUPLE, __VA_ARGS__))>;                                      \
+                                                                                                              \
+    static constexpr bool specialized = true;                                                                 \
+    static constexpr db::orm::field_info class_members[] = {                                                  \
+        DB_ORM_STRINGIFY_META_FIELD(FIELD0) __VA_OPT__(FOR_EACH(DB_ORM_STRINGIFY_META_FIELD, __VA_ARGS__))};  \
+                                                                                                              \
+    static auto tie(TYPE& source) {                                                                           \
+      return std::tie(                                                                                        \
+          source.FIELD0 __VA_OPT__(FOR_EACH(DB_ORM_PRIMARY_KEY_GET_FIRST_ARG_IN_ARRAY_APPEND, __VA_ARGS__))); \
+    }                                                                                                         \
+  };                                                                                                          \
   }
 
-#define DB_ORM_SPECIALIZE(TYPE, FIELDS...)                                                                  \
-  namespace db::orm {                                                                                       \
-  template <>                                                                                               \
-  struct meta<TYPE> {                                                                                       \
-    using class_type = TYPE;                                                                                \
-                                                                                                            \
-    static constexpr bool specialized = true;                                                               \
+#define DB_ORM_SPECIALIZE(TYPE, FIELDS...)                                                                   \
+  namespace db::orm {                                                                                        \
+  template <>                                                                                                \
+  struct meta<TYPE> {                                                                                        \
+    using class_type = TYPE;                                                                                 \
+                                                                                                             \
+    static constexpr bool specialized = true;                                                                \
     static constexpr const char class_name[] = #TYPE;                                                        \
-    static constexpr db::orm::field_info class_members[] = {FOR_EACH(DB_ORM_STRINGIFY_META_FIELD, FIELDS)}; \
-                                                                                                            \
-    static void serialize(db::statement& statement, const TYPE& source) {                                   \
-      FOR_EACH(DB_ORM_SERIALIZER_STATEMENT_SET, FIELDS)                                                     \
-    }                                                                                                       \
-                                                                                                            \
-    static void serialize(db::statement& statement, const TYPE& source, int& i) {                                   \
-      FOR_EACH(DB_ORM_SERIALIZER_STATEMENT_BY_I_SET, FIELDS)                                                     \
-    }                                                                                                       \
-                                                                                                            \
-    static void deserialize(db::resultset& resultset, TYPE& result) {                                       \
-      FOR_EACH(DB_ORM_DESERIALIZER_RESULTSET_GET, FIELDS)                                                   \
-    }                                                                                                       \
-  };                                                                                                        \
-                                                                                                            \
-  template <>                                                                                               \
-  struct fields<TYPE> {                                                                                     \
-    using class_type = TYPE;                                                                                \
-                                                                                                            \
-    static constexpr bool specialized = true;                                                               \
-                                                                                                            \
-    FOR_EACH(DB_ORM_FIELD_INIT, FIELDS)                                                                     \
-  };                                                                                                        \
-  }\
-  \
-  std::ostream& operator<<(std::ostream& os, const TYPE& obj) {\
-    os << #TYPE << " {" << std::endl;\
-    FOR_EACH(DB_ORM_STRINGIFY_TYPE_FIELD, FIELDS)                                                   \
-    os << "}" << std::endl;\
-\
-    return os;\
-  }\
-  \
-  std::ostream& operator<<(std::ostream& os, const std::optional<TYPE>& obj) {\
-    if (obj) {\
-      os << *obj;\
-    } else {\
-      os << #TYPE << " { <null> }" << std::endl;\
-    }\
-\
-    return os;\
-  }
+    static constexpr db::orm::field_info class_members[] = {FOR_EACH(DB_ORM_STRINGIFY_META_FIELD, FIELDS)};  \
+                                                                                                             \
+    static void serialize(db::statement& statement, const TYPE& source) {                                    \
+      FOR_EACH(DB_ORM_SERIALIZER_STATEMENT_SET, FIELDS);                                                     \
+    }                                                                                                        \
+                                                                                                             \
+    static void serialize(                                                                                   \
+        db::statement& statement, const TYPE& source, int& i, const std::vector<std::string_view>& fields) { \
+      FOR_EACH(DB_ORM_SERIALIZER_STATEMENT_BY_I_SET, FIELDS);                                                \
+    }                                                                                                        \
+                                                                                                             \
+    static void deserialize(db::resultset& resultset, TYPE& result) {                                        \
+      FOR_EACH(DB_ORM_DESERIALIZER_RESULTSET_GET, FIELDS);                                                   \
+    }                                                                                                        \
+                                                                                                             \
+    static std::vector<std::string_view> changes(const TYPE& source, const TYPE& original = {}) {            \
+      std::vector<std::string_view> result;                                                                  \
+      FOR_EACH(DB_ORM_FIELD_CHANGES, FIELDS);                                                                \
+      return result;                                                                                         \
+    }                                                                                                        \
+  };                                                                                                         \
+                                                                                                             \
+  template <>                                                                                                \
+  struct fields<TYPE> {                                                                                      \
+    using class_type = TYPE;                                                                                 \
+                                                                                                             \
+    static constexpr bool specialized = true;                                                                \
+    static constexpr const char class_name[] = #TYPE;                                                        \
+                                                                                                             \
+    const char* __alias = "";                                                                                \
+                                                                                                             \
+    constexpr fields(const char* source = "") {                                                              \
+      __alias = source;                                                                                      \
+                                                                                                             \
+      FOR_EACH(DB_ORM_FIELD_SET_SOURCE, FIELDS);                                                             \
+    }                                                                                                        \
+                                                                                                             \
+    static bool has(std::string_view field) {                                                                \
+      FOR_EACH(DB_ORM_FIELD_HAS, FIELDS);                                                                    \
+      return false;                                                                                          \
+    }                                                                                                        \
+                                                                                                             \
+    FOR_EACH(DB_ORM_FIELD_INIT, FIELDS)                                                                      \
+  };                                                                                                         \
+  }                                                                                                          \
+                                                                                                             \
+  using _##TYPE = db::orm::fields<TYPE>;
 
 namespace db {
 template <typename T>

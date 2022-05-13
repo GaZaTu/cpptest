@@ -1,5 +1,7 @@
 #pragma once
 
+#include "./out.hpp"
+
 namespace irc {
 namespace twitch {
 namespace tags {
@@ -76,10 +78,6 @@ constexpr const char COMMANDS[] = "twitch.tv/commands";
 
 std::string nickAnon() {
   return nick("justinfan93434586");
-}
-
-std::string authAnon() {
-  return nickAnon();
 }
 
 std::string whisper(std::string_view chn, std::string_view usr, std::string_view msg) {

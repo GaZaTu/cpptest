@@ -11,17 +11,10 @@ public:
   struct data {
     uv::detail::req* req;
 
-    virtual ~data() noexcept {
-    }
+    virtual ~data() noexcept;
   };
 
-  req(uv_req_t* native_req, data* data_ptr) : _native_req(native_req) {
-#if (UV_VERSION_MAJOR >= 1) && (UV_VERSION_MINOR >= 34)
-    uv_req_set_data(native_req, data_ptr);
-#else
-    native_req->data = (void*)data_ptr;
-#endif
-  }
+  req(uv_req_t* native_req, data* data_ptr);
 
   template <typename T>
   req(T* native_req, data* data_ptr) : req(reinterpret_cast<uv_req_t*>(native_req), data_ptr) {
@@ -31,20 +24,13 @@ public:
 
   req(const req&) = delete;
 
-  virtual ~req() noexcept {
-  }
+  virtual ~req() noexcept;
 
-  operator uv_req_t*() noexcept {
-    return _native_req;
-  }
+  operator uv_req_t*() noexcept;
 
-  operator const uv_req_t*() const noexcept {
-    return _native_req;
-  }
+  operator const uv_req_t*() const noexcept;
 
-  void cancel() {
-    error::test(uv_cancel(*this));
-  }
+  void cancel();
 
 protected:
   template <typename R, typename T>

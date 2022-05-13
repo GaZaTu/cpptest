@@ -9,39 +9,17 @@ class error : public std::runtime_error {
 public:
   int code;
 
-  error(const std::string& msg) : std::runtime_error(msg) {
-    this->code = -1;
-  }
+  error(const std::string& msg);
 
-  error(int code = 0) : std::runtime_error(strerror(code)) {
-    this->code = code;
-  }
+  error(int code = 0);
 
-  operator bool() {
-    return this->code != 0;
-  }
+  operator bool();
 
-  bool operator==(int code) {
-    return this->code == code;
-  }
+  bool operator==(int code);
 
-  static void test(int code) {
-    if (code != 0) {
-      throw error(code);
-    }
-  }
+  static void test(int code);
 
 private:
-  static const char* strerror(int code) {
-    if (code == -1) {
-      return "unknown";
-    }
-
-    if (code == 0) {
-      return "nothing";
-    }
-
-    return uv_strerror(code);
-  }
+  static const char* strerror(int code);
 };
 } // namespace uv

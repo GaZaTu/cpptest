@@ -5,29 +5,12 @@
 #include <optional>
 #include <variant>
 #include <iostream>
-#include <queue>
-#include <mutex>
-#include <shared_mutex>
 
 #include "cppcoro/async_manual_reset_event.hpp"
 
 namespace taskpp {
 namespace detail {
-std::queue<std::function<void()>> completed_tasks;
-std::shared_mutex completed_tasks_rwlock;
-
-void deleteTask(std::function<void()> deleter) {
-  std::unique_lock lock{detail::completed_tasks_rwlock};
-
-  while (!detail::completed_tasks.empty()) {
-    auto& existing_deleter = detail::completed_tasks.front();
-
-    existing_deleter();
-    detail::completed_tasks.pop();
-  }
-
-  detail::completed_tasks.push(std::move(deleter));
-}
+void deleteTask(std::function<void()> deleter);
 }
 
 template <typename T = void>
@@ -35,10 +18,9 @@ struct [[nodiscard]] task {
   using value_type = std::conditional_t<std::is_same_v<T, void>, std::nullopt_t, T>;
 
   static constexpr bool is_void_v = std::is_same_v<value_type, std::nullopt_t>;
-  static constexpr bool is_integral_v = std::is_integral_v<value_type>;
   static constexpr bool is_move_constructible_v = std::is_move_constructible_v<value_type>;
   static constexpr bool is_copy_constructible_v = std::is_copy_constructible_v<value_type>;
-  static constexpr bool is_basic_type_v = std::is_arithmetic_v<value_type> || std::is_pointer_v<value_type>;
+  static constexpr bool is_basic_type_v = std::is_arithmetic_v<value_type> || std::is_pointer_v<value_type> || std::is_reference_v<value_type>;
 
   static constexpr bool use_movable_param = is_move_constructible_v && !is_basic_type_v && !is_void_v;
   static constexpr bool use_const_param = is_copy_constructible_v && !is_move_constructible_v && !is_basic_type_v && !is_void_v;
@@ -215,6 +197,18 @@ struct [[nodiscard]] task {
     await_suspend(std::noop_coroutine());
   }
 
+  auto start_blocking(std::function<void()> run_main_loop) {
+    start_owned();
+
+    run_main_loop();
+
+    if (!done()) {
+      throw std::runtime_error{"run_main_loop ended before task"};
+    }
+
+    return unpack();
+  }
+
   void start(std::function<void(std::function<void()>)> queue_delete) {
     struct state_t {
       std::function<void(std::function<void()>)> queue_delete;
@@ -289,7 +283,9 @@ struct [[nodiscard]] task {
 
   using rejecter = std::function<void(std::exception_ptr)>;
 
-  static task<T> create(std::function<void(resolver&, rejecter&)> cb) {
+  using handler = std::function<void(resolver&, rejecter&)>;
+
+  static task<T> create(handler cb) {
     cppcoro::async_manual_reset_event event;
     promise_type promise;
 
@@ -306,6 +302,7 @@ struct [[nodiscard]] task {
 
     if constexpr (std::is_same_v<promise_type, promise_type_void_param>) {
       promise.unpack();
+      co_return;
     } else {
       co_return promise.unpack();
     }
@@ -345,7 +342,13 @@ struct [[nodiscard]] task {
 
   task<void> then(resolver then, rejecter fail = [](auto) {}) {
     try {
-      then(co_await *this);
+      if constexpr (is_void_v) {
+        co_await *this;
+        then();
+      } else {
+        auto v = co_await *this;
+        then(v);
+      }
     } catch (...) {
       fail(std::current_exception());
     }
@@ -360,18 +363,8 @@ struct [[nodiscard]] task {
     }
   }
 
-  template <typename F>
-  static void race(std::vector<task<void>>& vector, F& cb) {}
-
-  template <typename F, typename A0, typename... A>
-  static void race(std::vector<task<void>>& vector, F& cb, A0 task, A... tasks) {
-    vector.emplace_back(task.finally(cb));
-    race(vector, cb, tasks...);
-  }
-
   template <typename... A>
-  static task<void> race(A... tasks) {
-    std::vector<task<void>> vector;
+  static task<void> race(A&... tasks) {
     cppcoro::async_manual_reset_event event;
     std::exception_ptr error = nullptr;
 
@@ -380,7 +373,7 @@ struct [[nodiscard]] task {
       event.set();
     };
 
-    race(vector, cb, tasks...);
+    _race(cb, tasks...);
 
     co_await event;
 
@@ -456,7 +449,21 @@ private:
       event.set();
     };
   }
+
+  template <typename F>
+  static void _race(F& cb) {}
+
+  template <typename F, typename A0, typename... A>
+  static void _race(F& cb, A0& task, A&... tasks) {
+    task.finally(cb).start();
+    _race(cb, tasks...);
+  }
 };
+
+template <typename T>
+task<T> create(typename task<T>::handler cb) {
+  return task<T>::create(std::move(cb));
+}
 }
 
 #ifndef TASKPP_NO_GLOBAL_TASK

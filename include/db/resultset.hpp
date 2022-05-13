@@ -11,11 +11,7 @@ class resultset {
 public:
   class iterator {
   public:
-    explicit iterator(resultset& rslt, bool done) : _rslt(rslt), _done(done) {
-      if (!_done) {
-        ++(*this);
-      }
-    }
+    explicit iterator(resultset& rslt, bool done);
 
     iterator(const iterator&) = default;
 
@@ -25,31 +21,18 @@ public:
 
     iterator& operator=(iterator&&) = default;
 
-    iterator& operator++() {
-      _done = !_rslt.get().next();
-      return *this;
-    }
+    iterator& operator++();
 
-    iterator operator++(int) {
-      iterator result = *this;
-      ++(*this);
-      return result;
-    }
+    iterator operator++(int);
 
-    bool operator==(const iterator& other) const {
-      return _done == other._done;
-    }
+    bool operator==(const iterator& other) const;
 
-    bool operator!=(const iterator& other) const {
-      return !(*this == other);
-    }
+    bool operator!=(const iterator& other) const;
 
-    resultset& operator*() {
-      return _rslt.get();
-    }
+    resultset& operator*();
 
   private:
-    std::reference_wrapper<resultset> _rslt;
+    resultset& _rslt;
     bool _done;
   };
 
@@ -57,11 +40,7 @@ public:
   public:
     class iterator {
     public:
-      explicit iterator(resultset& rslt, int i, bool done) : _rslt(rslt), _i(i), _done(done) {
-        if (!_done) {
-          ++(*this);
-        }
-      }
+      explicit iterator(const resultset& rslt, int i, bool done);
 
       iterator(const iterator&) = default;
 
@@ -71,43 +50,24 @@ public:
 
       iterator& operator=(iterator&&) = default;
 
-      iterator& operator++() {
-        _done = (_i += 1) > _rslt.get()._datasource_resultset->columnCount();
+      iterator& operator++();
 
-        if (!_done) {
-          _column_name = _rslt.get()._datasource_resultset->columnName(_i - 1);
-        }
+      iterator operator++(int);
 
-        return *this;
-      }
+      bool operator==(const iterator& other) const;
 
-      iterator operator++(int) {
-        iterator result = *this;
-        ++(*this);
-        return result;
-      }
+      bool operator!=(const iterator& other) const;
 
-      bool operator==(const iterator& other) const {
-        return _done == other._done;
-      }
-
-      bool operator!=(const iterator& other) const {
-        return !(*this == other);
-      }
-
-      const std::string& operator*() const {
-        return _column_name;
-      }
+      std::string_view operator*() const;
 
     private:
-      std::reference_wrapper<resultset> _rslt;
+      const resultset& _rslt;
       int _i;
       bool _done;
       std::string _column_name;
     };
 
-    explicit columns_iterable(resultset& rslt) : _rslt(rslt) {
-    }
+    explicit columns_iterable(const resultset& rslt);
 
     columns_iterable(const columns_iterable&) = delete;
 
@@ -117,22 +77,17 @@ public:
 
     columns_iterable& operator=(columns_iterable&&) = default;
 
-    iterator begin() {
-      return iterator{_rslt.get(), 0, false};
-    }
+    iterator begin() const;
 
-    iterator end() {
-      return iterator{_rslt.get(), -1, true};
-    }
+    iterator end() const;
 
   private:
-    std::reference_wrapper<resultset> _rslt;
+    const resultset& _rslt;
   };
 
   class polymorphic_field {
   public:
-    explicit polymorphic_field(resultset& rslt, const std::string_view name) : _rslt(rslt), _name(name) {
-    }
+    explicit polymorphic_field(const resultset& rslt, std::string_view name);
 
     polymorphic_field(const polymorphic_field&) = delete;
 
@@ -142,119 +97,99 @@ public:
 
     polymorphic_field& operator=(polymorphic_field&&) = default;
 
-    orm::field_type type() {
-      return _rslt.get().type(_name);
-    }
+    orm::field_type type() const;
 
-    bool isNull() {
-      return _rslt.get().isNull(_name);
+    bool isNull() const;
+
+    template <typename T>
+    std::optional<T> get() const {
+      return _rslt.get<T>(_name);
     }
 
     template <typename T>
-    std::optional<T> get() {
-      return _rslt.get().get<T>(_name);
-    }
-
-    template <typename T>
-    T value() {
+    T value() const {
       return get<T>().value();
     }
 
     template <typename T>
-    operator std::optional<T>() {
+    operator std::optional<T>() const {
       return get<T>();
     }
 
     template <typename T>
-    operator T() {
+    operator T() const {
       return value<T>();
     }
 
   private:
-    std::reference_wrapper<resultset> _rslt;
+    const resultset& _rslt;
     std::string _name;
   };
 
-  explicit resultset(statement& stmt) {
-    _datasource_resultset = stmt._datasource_statement->execute();
-  }
+  explicit resultset(statement& stmt);
 
   resultset(const resultset&) = delete;
 
-  resultset(resultset&&) = delete;
+  resultset(resultset&&) = default;
 
   resultset& operator=(const resultset&) = delete;
 
   resultset& operator=(resultset&&) = delete;
 
-  bool next() {
-    return _datasource_resultset->next();
-  }
+  bool next();
 
-  orm::field_type type(const std::string_view name) {
-    return _datasource_resultset->getValueType(name);
-  }
+  orm::field_type type(std::string_view name) const;
 
-  bool isNull(const std::string_view name) {
-    return _datasource_resultset->isValueNull(name);
-  }
+  bool isNull(std::string_view name) const;
 
   template <typename T>
-  bool get(const std::string_view name, T& result) {
-    if (_datasource_resultset->isValueNull(name)) {
+  bool get(std::string_view name, T& result) const {
+    if (_datasource_resultset->isValueNull((std::string)name)) {
       return false;
     }
 
     if constexpr (type_converter<T>::specialized) {
       typename type_converter<T>::db_type tmp;
-
-      _datasource_resultset->getValue(name, tmp);
-
+      _datasource_resultset->getValue((std::string)name, tmp);
       result = type_converter<T>::deserialize(tmp);
     } else {
-      _datasource_resultset->getValue(name, result);
+      _datasource_resultset->getValue((std::string)name, result);
     }
 
     return true;
   }
 
   template <typename T>
-  inline void get(const std::string_view name, std::optional<T>& result) {
+  inline void get(std::string_view name, std::optional<T>& result) const {
     T value;
     if (get<T>(name, value)) {
       result = std::move(value);
+    } else {
+      result = std::nullopt;
     }
   }
 
   template <typename T>
-  inline std::optional<T> get(const std::string_view name) {
+  inline std::optional<T> get(std::string_view name) const {
     std::optional<T> result;
     get<T>(name, result);
     return result;
   }
 
   template <typename T>
-  inline T value(const std::string_view name) {
+  inline T value(std::string_view name) const {
     T result;
     get<T>(name, result);
     return result;
   }
 
-  polymorphic_field operator[](const std::string_view name) {
-    return polymorphic_field(*this, name);
-  }
+  polymorphic_field operator[](std::string_view name) const;
 
-  iterator begin() {
-    return iterator(*this, false);
-  }
+  iterator begin();
 
-  iterator end() {
-    return iterator(*this, true);
-  }
+  iterator end();
 
-  columns_iterable columns() {
-    return columns_iterable(*this);
-  }
+  columns_iterable columns() const;
 
   template <typename T>
   std::optional<T> firstValue() {
@@ -273,17 +208,11 @@ public:
   // }
 
   template <typename T = datasource::resultset>
-  std::shared_ptr<T> getNativeResultset() {
+  std::shared_ptr<T> getNativeResultset() const {
     return std::dynamic_pointer_cast<T>(_datasource_resultset);
   }
 
 private:
-  std::shared_ptr<datasource::resultset> _datasource_resultset;
+  mutable std::shared_ptr<datasource::resultset> _datasource_resultset;
 };
-
-// resultset connection::select(std::string_view script) {
-//   statement stmt{*this};
-//   stmt.prepare(script);
-//   return resultset{stmt};
-// }
 } // namespace db

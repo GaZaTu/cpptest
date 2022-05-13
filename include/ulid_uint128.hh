@@ -437,9 +437,9 @@ inline void UnmarshalFrom(const char str[26], ULID& ulid) {
 /**
  * Unmarshal will create a new ULID by unmarshaling the passed string.
  * */
-inline ULID Unmarshal(const std::string& str) {
+inline ULID Unmarshal(std::string_view str) {
 	ULID ulid;
-	UnmarshalFrom(str.c_str(), ulid);
+	UnmarshalFrom(str.data(), ulid);
 	return ulid;
 }
 

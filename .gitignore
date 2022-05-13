@@ -1,8 +1,16 @@
 build
 
 .db
+.db-shm
+.db-wal
+.pgdata
+.pg.log
 .irc-nick
 .irc-pass
 bombardier
 server-cert.pem
 server-key.pem
+
+include/http_parser.h
+include/uv.h
+include/uv

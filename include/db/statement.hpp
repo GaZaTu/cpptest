@@ -12,10 +12,14 @@ class statement {
 public:
   friend resultset;
 
+  friend class db::orm::selector;
+  friend class db::orm::inserter;
+  friend class db::orm::updater;
+  friend class db::orm::deleter;
+
   class parameter {
   public:
-    explicit parameter(statement& stmt, const std::string_view name) : _stmt(stmt), _name(name) {
-    }
+    explicit parameter(statement& stmt, std::string_view name);
 
     parameter(const parameter&) = delete;
 
@@ -25,79 +29,62 @@ public:
 
     parameter& operator=(parameter&&) = default;
 
-    inline parameter& operator=(bool value) {
-      setValue(value);
-      return *this;
-    }
+    parameter& operator=(bool value);
 
-    inline parameter& operator=(int value) {
-      setValue(value);
-      return *this;
-    }
+    parameter& operator=(int8_t value);
 
-    inline parameter& operator=(int64_t value) {
-      setValue(value);
-      return *this;
-    }
+    parameter& operator=(uint8_t value);
+
+    parameter& operator=(int16_t value);
+
+    parameter& operator=(uint16_t value);
+
+    parameter& operator=(int32_t value);
+
+    parameter& operator=(uint32_t value);
+
+    parameter& operator=(int64_t value);
+
+    parameter& operator=(uint64_t value);
 
 #ifdef __SIZEOF_INT128__
-    inline parameter& operator=(__uint128_t value) {
-      setValue(value);
-      return *this;
-    }
+    parameter& operator=(__uint128_t value);
 #endif
 
-    inline parameter& operator=(double value) {
-      setValue(value);
-      return *this;
-    }
+    parameter& operator=(float value);
 
-    inline parameter& operator=(const std::string_view value) {
-      setValue(value);
-      return *this;
-    }
+    parameter& operator=(double value);
 
-    inline parameter& operator=(const char* value) {
-      return (*this) = std::string_view{value};
-    }
+    parameter& operator=(long double value);
 
-    inline parameter& operator=(const std::vector<uint8_t>& value) {
-      setValue(value);
-      return *this;
-    }
+    parameter& operator=(std::string_view value);
+
+    parameter& operator=(std::string&& value);
+
+    parameter& operator=(const char* value);
+
+    parameter& operator=(const std::vector<uint8_t>& value);
 
     template <typename T>
     inline parameter& operator=(const std::optional<T>& value) {
-      setValueByOptional<T>(value);
-      return *this;
-    }
-
-    inline parameter& operator=(orm::date value) {
       setValue(value);
       return *this;
     }
 
-    inline parameter& operator=(orm::time value) {
-      setValue(value);
-      return *this;
-    }
+    parameter& operator=(orm::date value);
 
-    inline parameter& operator=(orm::datetime value) {
-      setValue(value);
-      return *this;
-    }
+    parameter& operator=(orm::time value);
 
-    inline parameter& operator=(std::nullopt_t) {
-      setNull();
-      return *this;
-    }
+    parameter& operator=(orm::timestamp value);
+
+    parameter& operator=(std::nullopt_t);
 
   private:
     std::reference_wrapper<statement> _stmt;
     std::string _name;
 
     template <typename T>
-    void setValueByOptional(const std::optional<T>& value) {
+    void setValue(const std::optional<T>& value) {
       if (value) {
         if constexpr (type_converter<T>::specialized) {
           setValue(type_converter<T>::serialize(*value));
@@ -110,63 +97,46 @@ public:
     }
 
     template <typename T>
-    void setValue(const T& value) {
+    void setValue(T&& value) {
       _stmt.get().assertPrepared();
       _stmt.get()._datasource_statement->setParam(_name, value);
     }
 
-    void setNull() {
-      _stmt.get().assertPrepared();
-      _stmt.get()._datasource_statement->setParamToNull(_name);
-    }
+    void setNull();
   };
 
   class parameter_access {
   public:
-    explicit parameter_access(statement& stmt) : _stmt(stmt) {
-    }
+    explicit parameter_access(statement& stmt);
 
-    parameter& operator[](const std::string_view name) {
-      return *(_current_parameter = statement::parameter(_stmt, name));
-    }
+    parameter& operator[](std::string_view name);
 
   private:
     std::reference_wrapper<statement> _stmt;
     std::optional<parameter> _current_parameter;
   };
 
-  parameter_access params = parameter_access(*this);
+  parameter_access params{*this};
 
-  explicit statement(connection& conn) : _conn(conn) {
-  }
+  explicit statement(connection& conn);
 
   statement(const statement&) = delete;
 
-  statement(statement&&) = delete;
+  statement(statement&&);
 
   statement& operator=(const statement&) = delete;
 
   statement& operator=(statement&&) = delete;
 
-  void prepare(const std::string_view script) {
-    _datasource_statement = _conn.get()._datasource_connection->prepareStatement(script);
-  }
+  void prepare(std::string_view script);
 
-  bool prepared() {
-    return !!_datasource_statement;
-  }
+  bool prepared();
 
-  void assertPrepared() {
-    if (!prepared()) {
-      // throw new std::runtime_error("statement not yet prepared");
-    }
-  }
+  void assertPrepared();
 
-  int executeUpdate() {
-    assertPrepared();
+  int executeUpdate();
 
-    return _datasource_statement->executeUpdate();
-  }
+  bool readonly();
 
   template <typename T = datasource::statement>
   std::shared_ptr<T> getNativeStatement() {

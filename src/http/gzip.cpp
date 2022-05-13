@@ -1,9 +1,9 @@
-#pragma once
-
+#ifdef HTTPPP_ZLIB
+#include "http/gzip.hpp"
 #include "zlib.h"
-#include <string>
 
 namespace http {
+namespace gzip {
 int compress(std::string& _body) {
   std::string body;
 
@@ -83,4 +83,6 @@ int uncompress(std::string& _body) {
 
   return 0;
 }
+}
 } // namespace http
+#endif

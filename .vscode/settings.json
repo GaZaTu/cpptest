@@ -8,8 +8,8 @@
     "**/.DS_Store": true
   },
   "files.associations": {
-    "*.qrc": "xml",
     "*.qss": "css",
+    "*.qrc": "xml",
     "iostream": "cpp",
     "condition_variable": "cpp",
     "cctype": "cpp",
@@ -97,7 +97,9 @@
     "semaphore": "cpp",
     "queue": "cpp",
     "forward_list": "cpp",
-    "valarray": "cpp"
+    "valarray": "cpp",
+    "filesystem": "cpp",
+    "span": "cpp"
   },
   "clang-tidy.buildPath": "build"
 }

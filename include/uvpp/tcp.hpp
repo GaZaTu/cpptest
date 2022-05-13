@@ -3,8 +3,8 @@
 #include "./dns.hpp"
 #include "./error.hpp"
 #include "./stream.hpp"
-#ifndef UVPP_NO_TASK
-#include "../task.hpp"
+#ifdef UVPP_TASK_INCLUDE
+#include UVPP_TASK_INCLUDE
 #endif
 #include "uv.h"
 #include <functional>
@@ -16,221 +16,62 @@ public:
     uv_tcp_t* _native_tcp;
     std::function<void()> tcp_cb;
 
-    data(uv_tcp_t* native_tcp) : _native_tcp(native_tcp) {
-    }
+    data(uv_tcp_t* native_tcp);
 
-    virtual ~data() {
-      delete _native_tcp;
-    }
+    virtual ~data();
   };
 
-  tcp(uv_loop_t* native_loop, uv_tcp_t* native_tcp)
-      : stream(native_tcp, new data(native_tcp)), _native_tcp(native_tcp) {
-    error::test(uv_tcp_init(native_loop, native_tcp));
-  }
+  tcp(uv_loop_t* native_loop, uv_tcp_t* native_tcp);
 
-  tcp(uv_loop_t* native_loop) : tcp(native_loop, new uv_tcp_t()) {
-  }
+  tcp(uv_loop_t* native_loop);
 
-  tcp(uv_tcp_t* native_tcp) : tcp(uv_default_loop(), native_tcp) {
-  }
+  tcp(uv_tcp_t* native_tcp);
 
-  tcp() : tcp(uv_default_loop(), new uv_tcp_t()) {
-  }
+  tcp();
 
-  operator uv_tcp_t*() noexcept {
-    return _native_tcp;
-  }
+  operator uv_tcp_t*() noexcept;
 
-  operator const uv_tcp_t*() const noexcept {
-    return _native_tcp;
-  }
+  operator const uv_tcp_t*() const noexcept;
 
-  void accept(tcp& client, std::function<void(uv::error)> cb) {
-    stream::accept(client);
+  void accept(tcp& client, std::function<void(uv::error)> cb);
 
-#ifndef UVPP_NO_SSL
-    if (!_ssl_context) {
-      cb(uv::error{0});
-      return;
-    }
-
-    client.useSSL(*_ssl_context);
-    client.hookSSLIntoStream(cb)(uv::error{0});
-#else
-    cb(uv::error{0});
-#endif
-  }
-
-#ifndef UVPP_NO_TASK
-  task<void> accept(tcp& client) {
-    return task<void>::create([this, &client](auto& resolve, auto& reject) {
-      accept(client, [&resolve, &reject](auto error) {
-        if (error) {
-          reject(std::make_exception_ptr(error));
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
+#ifdef UVPP_TASK_INCLUDE
+  task<void> accept(tcp& client);
 #endif
 
-  void nodelay(bool enable) {
-    uv_tcp_nodelay(*this, enable);
-  }
+  void nodelay(bool enable);
 
-  void simultaneousAccepts(bool enable) {
-    uv_tcp_simultaneous_accepts(*this, enable);
-  }
+  void simultaneousAccepts(bool enable);
 
-  void bind(const sockaddr* addr, unsigned int flags = 0) {
-    error::test(uv_tcp_bind(*this, addr, flags));
-  }
+  void bind(const sockaddr* addr, unsigned int flags = 0);
 
-  void bind4(const char* ip, int port, unsigned int flags = 0) {
-    sockaddr_in addr;
-    uv_ip4_addr(ip, port, &addr);
-    bind((const sockaddr*)&addr, flags);
-  }
+  void bind4(const char* ip, int port, unsigned int flags = 0);
 
-  void bind6(const char* ip, int port, unsigned int flags = 0) {
-    sockaddr_in6 addr;
-    uv_ip6_addr(ip, port, &addr);
-    bind((const sockaddr*)&addr, flags);
-  }
+  void bind6(const char* ip, int port, unsigned int flags = 0);
 
-  // uv_tcp_getsockname
+  std::string sockname();
 
-  // uv_tcp_getpeername
+  std::string peername();
 
-  void connect(uv::dns::addrinfo addr, std::function<void(uv::error)> cb) {
-    auto _connect = [this](uv::dns::addrinfo addr, std::function<void(uv::error)>& cb) {
-      struct data_t : public uv::detail::req::data {
-        std::function<void(uv::error)> cb;
-      };
-      using req_t = uv::req<uv_connect_t, data_t>;
+  void connect(uv::dns::addrinfo addr, std::function<void(uv::error)> cb);
 
-      auto req = new req_t();
-      auto data = req->dataPtr();
-      data->cb = cb;
-
-      error::test(uv_tcp_connect(*req, *this, addr->ai_addr, [](uv_connect_t* req, int status) {
-        auto data = req_t::dataPtr(req);
-        auto cb = std::move(data->cb);
-        delete data->req;
-
-        cb(uv::error{status});
-      }));
-    };
-
-#ifndef UVPP_NO_SSL
-    if (!_ssl_state) {
-      _connect(addr, cb);
-      return;
-    }
-
-    auto cb_ssl = hookSSLIntoStream(cb);
-    _connect(addr, cb_ssl);
-#else
-    _connect(addr, cb);
-#endif
-  }
-
-#ifndef UVPP_NO_TASK
-  task<void> connect(uv::dns::addrinfo addr) {
-    return task<void>::create([this, &addr](auto& resolve, auto& reject) {
-      connect(addr, [&resolve, &reject](auto error) {
-        if (error) {
-          reject(std::make_exception_ptr(error));
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
+#ifdef UVPP_TASK_INCLUDE
+  task<void> connect(uv::dns::addrinfo addr);
 #endif
 
-  void connect(const std::string& node, const std::string& service, std::function<void(uv::error)> cb) {
-    uv::dns::getaddrinfo(node, service, [this, cb](auto addr, auto error) {
-      if (error) {
-        cb(error);
-        return;
-      }
+  void connect(const std::string& node, const std::string& service, std::function<void(uv::error)> cb);
 
-      connect(addr, cb);
-    });
-  }
-
-#ifndef UVPP_NO_TASK
-  task<void> connect(const std::string& node, const std::string& service) {
-    auto addr = co_await uv::dns::getaddrinfo(node, service);
-
-    co_await connect(addr);
-  }
+#ifdef UVPP_TASK_INCLUDE
+  task<void> connect(const std::string& node, const std::string& service);
 #endif
 
-  void connect(const std::string& node, short port, std::function<void(uv::error)> cb) {
-    connect(node.data(), std::to_string(port).data(), cb);
-  }
+  void connect(const std::string& node, short port, std::function<void(uv::error)> cb);
 
-#ifndef UVPP_NO_TASK
-  task<void> connect(const std::string& node, short port) {
-    co_await connect(node, std::to_string(port));
-  }
+#ifdef UVPP_TASK_INCLUDE
+  task<void> connect(const std::string& node, short port);
 #endif
 
 private:
   uv_tcp_t* _native_tcp;
-
-  std::function<void(uv::error)> hookSSLIntoStream(std::function<void(uv::error)>& cb) {
-    _ssl_state.onReadDecrypted([this](auto data) {
-      auto data_ptr = getData<uv::tcp::data>();
-
-      if (data_ptr->read_decrypted_cb) {
-        data_ptr->read_decrypted_cb(data, uv::error{0});
-      }
-    });
-
-    _ssl_state.onWriteEncrypted([this](auto&& input, auto cb) {
-      write(
-          std::move(input),
-          [cb{std::move(cb)}](auto error) {
-            if (error) {
-              cb(std::make_exception_ptr(error));
-            } else {
-              cb(nullptr);
-            }
-          },
-          false);
-    });
-
-    return [this, cb{std::move(cb)}](auto error) {
-      if (error) {
-        cb(error);
-        return;
-      }
-
-      _ssl_state.handshake([this, cb]() {
-        cb(uv::error{0});
-      });
-
-      readStart(
-          [this, cb](auto data, auto error) {
-            if (error) {
-              auto data_ptr = getData<uv::tcp::data>();
-
-              if (data_ptr->read_decrypted_cb) {
-                data_ptr->read_decrypted_cb(std::string_view{nullptr, 0}, error);
-              } else if (cb) {
-                cb(error);
-              }
-            } else {
-              _ssl_state.decrypt(data);
-            }
-          },
-          false);
-    };
-  }
 };
 } // namespace uv

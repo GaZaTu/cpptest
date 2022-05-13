@@ -95,7 +95,7 @@ struct timestamp {
 
 using date = detail::timestamp<detail::format_date, sizeof(detail::output_date)>;
 using time = detail::timestamp<detail::format_time, sizeof(detail::output_time)>;
-using datetime = detail::timestamp<detail::format_iso, sizeof(detail::output_iso)>;
+using timestamp = detail::timestamp<detail::format_iso, sizeof(detail::output_iso)>;
 
 template <typename T>
 struct primary {
@@ -127,18 +127,7 @@ enum order_by_direction {
   DESCENDING,
 };
 
-std::ostream& operator<<(std::ostream& os, order_by_direction op) {
-  switch (op) {
-  case ASCENDING:
-    os << "ASC";
-    break;
-  case DESCENDING:
-    os << "DESC";
-    break;
-  }
-
-  return os;
-}
+std::ostream& operator<<(std::ostream& os, order_by_direction op);
 
 enum order_by_nulls {
   NULLS_DEFAULT,
@@ -146,18 +135,15 @@ enum order_by_nulls {
   NULLS_LAST,
 };
 
-std::ostream& operator<<(std::ostream& os, order_by_nulls op) {
-  switch (op) {
-  case NULLS_FIRST:
-    os << "NULLS FIRST";
-    break;
-  case NULLS_LAST:
-    os << "NULLS LAST";
-    break;
-  }
+std::ostream& operator<<(std::ostream& os, order_by_nulls op);
 
-  return os;
-}
+enum join_mode {
+  JOIN_INNER,
+  JOIN_LEFT,
+  JOIN_CROSS,
+};
+
+std::ostream& operator<<(std::ostream& os, join_mode op);
 
 enum class condition_operator {
   CUSTOM              = 1 <<  0,
@@ -190,55 +176,10 @@ inline constexpr bool operator==(condition_operator a, int b) {
   return (int)a == (int)b;
 }
 
-std::ostream& operator<<(std::ostream& os, condition_operator op) {
-  switch (op) {
-  case condition_operator::ASSIGNMENT:
-    os << " = ";
-    break;
-  case condition_operator::AND:
-    os << " AND ";
-    break;
-  case condition_operator::OR:
-    os << " OR ";
-    break;
-  case condition_operator::EQUALS:
-    os << " = ";
-    break;
-  case condition_operator::NOT_EQUALS:
-    os << " != ";
-    break;
-  case condition_operator::LOWER_THAN:
-    os << " < ";
-    break;
-  case condition_operator::LOWER_THAN_EQUALS:
-    os << " <= ";
-    break;
-  case condition_operator::GREATER_THAN:
-    os << " > ";
-    break;
-  case condition_operator::GREATER_THAN_EQUALS:
-    os << " >= ";
-    break;
-  case condition_operator::IS_NULL:
-    os << " IS NULL";
-    break;
-  case condition_operator::IS_NOT_NULL:
-    os << " IS NOT NULL";
-    break;
-  case condition_operator::NOT:
-    os << " NOT ";
-    break;
-  case condition_operator::IN:
-    os << " IN ";
-    break;
-  }
-
-  return os;
-}
+std::ostream& operator<<(std::ostream& os, condition_operator op);
 
 struct condition_container {
-  virtual ~condition_container() {
-  }
+  virtual ~condition_container();
 
   virtual condition_operator getOperator() const = 0;
 
@@ -248,17 +189,11 @@ struct condition_container {
 
   virtual void appendToQuery(std::ostream& os, int& i) const = 0;
 
-  void appendToQuery(std::ostream& os) const {
-    int i = 666;
-    appendToQuery(os, i);
-  }
+  void appendToQuery(std::ostream& os) const;
 
   virtual void assignToParams(db::statement& statement, int& i) const = 0;
 
-  void assignToParams(db::statement& statement) const {
-    int i = 666;
-    assignToParams(statement, i);
-  }
+  void assignToParams(db::statement& statement) const;
 };
 
 struct selection {
@@ -267,50 +202,26 @@ struct selection {
 
   selection() = default;
 
-  selection(const char* name, const char* alias) {
-    this->name = name;
-    this->alias = alias;
-  }
+  selection(const char* name, const char* alias);
 
-  selection(const char* name) {
-    this->name = name;
-  }
+  selection(const char* name);
 
-  selection(const std::string& name) {
-    this->name = name;
-  }
+  selection(const std::string& name);
 
-  selection(std::string_view name) {
-    this->name = name;
-  }
+  selection(std::string_view name);
 
-  selection(std::string&& name) {
-    this->name = std::move(name);
-  }
+  selection(std::string&& name);
 
-  explicit operator std::string() const {
-    std::string result;
-    // result += '"';
-    result += name;
-    // result += '"';
-    if (alias.length() > 0) {
-      result += " AS ";
-      result += '"';
-      result += alias;
-      result += '"';
-    }
-    return result;
-  }
+  explicit operator std::string() const;
 
-  operator bool() const {
-    return name.length() > 0;
-  }
+  operator bool() const;
 };
 
 struct query_builder_data {
   struct join_on_clause {
     selection table;
-    std::string condition;
+    std::shared_ptr<condition_container> condition = nullptr;
+    join_mode mode = JOIN_INNER;
   };
 
   struct order_by_clause {
@@ -320,10 +231,10 @@ struct query_builder_data {
   };
 
   enum upsert_mode {
-    DISABLED,
-    NOTHING,
-    UPDATE,
-    REPLACE,
+    UP_DISABLED,
+    UP_NOTHING,
+    UP_UPDATE,
+    UP_REPLACE,
   };
 
   selection table;
@@ -331,9 +242,13 @@ struct query_builder_data {
   std::vector<join_on_clause> joins;
   std::vector<std::shared_ptr<condition_container>> assignments;
   std::vector<std::shared_ptr<condition_container>> conditions;
+  std::vector<std::string> grouping;
+  std::vector<std::shared_ptr<condition_container>> having_conditions;
   std::vector<order_by_clause> ordering;
-  int limit = 0;
-  upsert_mode upsert = DISABLED;
+  uint32_t offset = 0;
+  uint32_t limit = 0;
+  upsert_mode upsert = UP_DISABLED;
+  bool distinct = false;
   // db::orm::query_builder_data upsert_data;
 };
 } // namespace db::orm

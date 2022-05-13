@@ -1,7 +1,7 @@
 #pragma once
 
-#ifndef UVPP_NO_TASK
-#include "../task.hpp"
+#ifdef UVPP_TASK_INCLUDE
+#include UVPP_TASK_INCLUDE
 #endif
 #include "uv.h"
 #include <functional>
@@ -12,17 +12,10 @@ public:
   struct data {
     std::function<void()> close_cb;
 
-    virtual ~data() {
-    }
+    virtual ~data();
   };
 
-  handle(uv_handle_t* native_handle, data* data_ptr) : _native_handle(native_handle) {
-#if (UV_VERSION_MAJOR >= 1) && (UV_VERSION_MINOR >= 34)
-    uv_handle_set_data(native_handle, data_ptr);
-#else
-    native_handle->data = (void*)data_ptr;
-#endif
-  }
+  handle(uv_handle_t* native_handle, data* data_ptr);
 
   template <typename T>
   handle(T* native_handle, data* data_ptr) : handle(reinterpret_cast<uv_handle_t*>(native_handle), data_ptr) {
@@ -32,52 +25,20 @@ public:
 
   handle(const handle&) = delete;
 
-  virtual ~handle() noexcept {
-    data* data_ptr = getData<data>();
+  virtual ~handle() noexcept;
 
-    if (isClosing()) {
-      delete data_ptr;
-    } else {
-      close([data_ptr]() {
-        delete data_ptr;
-      });
-    }
-  }
+  operator uv_handle_t*() noexcept;
 
-  operator uv_handle_t*() noexcept {
-    return _native_handle;
-  }
+  operator const uv_handle_t*() const noexcept;
 
-  operator const uv_handle_t*() const noexcept {
-    return _native_handle;
-  }
+  bool isActive() const noexcept;
 
-  bool isActive() const noexcept {
-    return uv_is_active(*this) != 0;
-  }
+  bool isClosing() const noexcept;
 
-  bool isClosing() const noexcept {
-    return uv_is_closing(*this) != 0;
-  }
+  virtual void close(std::function<void()> close_cb) noexcept;
 
-  virtual void close(std::function<void()> close_cb) noexcept {
-    data* data_ptr = getData<data>();
-    data_ptr->close_cb = close_cb;
-
-    uv_close(*this, [](uv_handle_t* native_handle) {
-      data* data_ptr = handle::getData<data>(native_handle);
-      data_ptr->close_cb();
-    });
-  }
-
-#ifndef UVPP_NO_TASK
-  task<void> close() {
-    return task<void>::create([this](auto& resolve, auto& reject) {
-      close([&resolve]() {
-        resolve();
-      });
-    });
-  }
+#ifdef UVPP_TASK_INCLUDE
+  task<void> close();
 #endif
 
 protected:

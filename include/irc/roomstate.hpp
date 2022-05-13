@@ -65,7 +65,7 @@ private:
     std::tie(data, _tags) = consumeTags((std::string_view)(*this));
 
     std::cmatch match;
-    std::regex_search(data.begin(), data.end(), match, regex::roomstate);
+    std::regex_search(std::begin(data), std::end(data), match, regex::roomstate);
 
     if (match.empty()) {
       if (_raw.index() == STRING) {

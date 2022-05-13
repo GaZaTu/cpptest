@@ -1,15 +1,15 @@
 #pragma once
 
+#ifdef HTTPPP_HTTP2
 #include "./common.hpp"
-#include "./zlib.hpp"
 #include <cstring>
 #include <functional>
 #include <nghttp2/nghttp2.h>
-#ifndef HTTPPP_NO_TASK
-#include "../task.hpp"
+#ifdef HTTPPP_TASK_INCLUDE
+#include HTTPPP_TASK_INCLUDE
 #endif
 
-namespace http2 {
+namespace http::_2 {
 // either http::request or http::response
 template <typename T>
 struct handler {
@@ -21,7 +21,7 @@ public:
         _callbacks, [](nghttp2_session* session, const uint8_t* data, size_t length, int flags, void* user_data) {
           std::string_view input{(const char*)data, length};
 
-          auto handler = (http2::handler<T>*)user_data;
+          auto handler = (http::_2::handler<T>*)user_data;
           handler->_on_send(input);
 
           return (ssize_t)length;
@@ -29,7 +29,7 @@ public:
 
     nghttp2_session_callbacks_set_on_begin_headers_callback(_callbacks,
         [](nghttp2_session *session, const nghttp2_frame *frame, void *user_data) {
-          auto handler = (http2::handler<T>*)user_data;
+          auto handler = (http::_2::handler<T>*)user_data;
 
           nghttp2_session_set_stream_user_data(handler->_session, frame->hd.stream_id, (void*)1);
 
@@ -61,7 +61,7 @@ public:
           std::string_view header_name{(const char*)name, namelen};
           std::string_view header_value{(const char*)value, valuelen};
 
-          auto handler = (http2::handler<T>*)user_data;
+          auto handler = (http::_2::handler<T>*)user_data;
           auto& result = handler->_result[frame->hd.stream_id];
 
           if constexpr (type == HTTP_REQUEST) {
@@ -104,7 +104,7 @@ public:
             void* user_data) {
           std::string_view chunk{(const char*)data, len};
 
-          auto handler = (http2::handler<T>*)user_data;
+          auto handler = (http::_2::handler<T>*)user_data;
           handler->_result[stream_id].body += chunk;
 
           return 0;
@@ -112,7 +112,7 @@ public:
 
     nghttp2_session_callbacks_set_on_stream_close_callback(
         _callbacks, [](nghttp2_session* session, int32_t stream_id, uint32_t error_code, void* user_data) {
-          auto handler = (http2::handler<T>*)user_data;
+          auto handler = (http::_2::handler<T>*)user_data;
 
           nghttp2_session_set_stream_user_data(handler->_session, stream_id, (void*)0);
 
@@ -126,7 +126,7 @@ public:
 
     nghttp2_session_callbacks_set_on_frame_recv_callback(
         _callbacks, [](nghttp2_session* session, const nghttp2_frame* frame, void* user_data) {
-          auto handler = (http2::handler<T>*)user_data;
+          auto handler = (http::_2::handler<T>*)user_data;
 
           switch (frame->hd.type) {
           case NGHTTP2_DATA:
@@ -146,7 +146,7 @@ public:
 
     nghttp2_session_callbacks_set_on_frame_send_callback(
         _callbacks, [](nghttp2_session* session, const nghttp2_frame* frame, void* user_data) {
-          auto handler = (http2::handler<T>*)user_data;
+          auto handler = (http::_2::handler<T>*)user_data;
 
           switch (frame->hd.type) {
           case NGHTTP2_DATA:
@@ -172,6 +172,14 @@ public:
     nghttp2_session_callbacks_del(_callbacks);
   }
 
+  handler(const handler&) = delete;
+
+  handler(handler&&) = delete;
+
+  handler& operator=(const handler&) = delete;
+
+  handler& operator=(handler&&) = delete;
+
   void execute(std::string_view chunk) {
     int rv = nghttp2_session_mem_recv(_session, (const uint8_t*)chunk.data(), chunk.length());
     if (rv < 0) {
@@ -193,9 +201,9 @@ public:
     _on_complete = std::move(on_complete);
   }
 
-#ifndef HTTPPP_NO_TASK
-  task<void> onComplete() {
-    return task<void>::create([this](auto& resolve, auto&) {
+#ifdef HTTPPP_TASK_INCLUDE
+  HTTPPP_TASK_TYPE<void> onComplete() {
+    return HTTPPP_TASK_CREATE<void>([this](auto& resolve, auto&) {
       onComplete(resolve);
     });
   }
@@ -227,7 +235,7 @@ public:
     }
   }
 
-  uint32_t submitRequest(const http::request& request) {
+  void submitRequest(const http::request& request, std::function<void(int32_t)> on_send) {
     std::string method = (std::string)request.method;
     std::string scheme = request.url.schema();
     std::string authority = request.url.host();
@@ -242,15 +250,64 @@ public:
       headers.push_back(makeNV(name, value));
     }
 
-    int id = nghttp2_submit_request(_session, 0, headers.data(), headers.size(), nullptr, this);
+    nghttp2_data_provider data_provider;
+    nghttp2_data_provider* data_provider_ptr = nullptr;
+    if (!request.body.empty()) {
+      data_provider_ptr = &data_provider;
+
+      struct read_context {
+        const http::request* request;
+        uint64_t offset;
+        std::function<void(int32_t)> on_send;
+      };
+      auto context = new read_context();
+      context->request = &request;
+      context->offset = 0;
+      context->on_send = std::move(on_send);
+
+      data_provider.source.ptr = (void*)context;
+      data_provider.read_callback = [](nghttp2_session* session, int32_t stream_id, uint8_t* buf, size_t length,
+                                        uint32_t* data_flags, nghttp2_data_source* source, void* user_data) -> ssize_t {
+        auto context = (read_context*)source->ptr;
+        const auto& request = *context->request;
+
+        auto& offset = context->offset;
+        size_t copy_length = std::min(request.body.length(), length);
+        memcpy(buf, request.body.data() + offset, copy_length);
+        offset += copy_length;
+
+        if (request.body.length() == offset) {
+          auto on_send = std::move(context->on_send);
+          *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+          delete context;
+          on_send(stream_id);
+        }
+
+        return copy_length;
+      };
+    }
+
+    int id = nghttp2_submit_request(_session, 0, headers.data(), headers.size(), data_provider_ptr, this);
     if (id <= 0) {
       throw http::error{nghttp2_strerror(id)};
     }
 
-    return id;
+    if (!data_provider_ptr) {
+      on_send(id);
+    }
+
+    // return id;
   }
 
-  void submitResponse(const http::response& response, int32_t stream_id, std::function<void()> on_send) {
+#ifdef HTTPPP_TASK_INCLUDE
+  HTTPPP_TASK_TYPE<int32_t> submitRequest(const http::request& request) {
+    return HTTPPP_TASK_CREATE<int32_t>([this, &request](auto& resolve, auto&) {
+      submitRequest(request, std::move(resolve));
+    });
+  }
+#endif
+
+  void submitResponse(int32_t stream_id, const http::response& response, std::function<void()> on_send) {
     std::string status = std::to_string(response.status);
 
     std::vector<nghttp2_nv> headers;
@@ -259,48 +316,57 @@ public:
       headers.push_back(makeNV(name, value));
     }
 
-    struct read_context {
-      const http::response* response;
-      uint64_t offset;
-      std::function<void()> on_send;
-    };
-    auto context = new read_context();
-    context->response = &response;
-    context->offset = 0;
-    context->on_send = std::move(on_send);
-
     nghttp2_data_provider data_provider;
-    data_provider.source.ptr = (void*)context;
-    data_provider.read_callback = [](nghttp2_session* session, int32_t stream_id, uint8_t* buf, size_t length,
-                                      uint32_t* data_flags, nghttp2_data_source* source, void* user_data) -> ssize_t {
-      auto context = (read_context*)source->ptr;
-      const auto& response = *context->response;
+    nghttp2_data_provider* data_provider_ptr = nullptr;
+    if (!response.body.empty()) {
+      data_provider_ptr = &data_provider;
 
-      auto& offset = context->offset;
-      size_t copy_length = std::min(response.body.length(), length);
-      memcpy(buf, response.body.data() + offset, copy_length);
-      offset += copy_length;
+      struct read_context {
+        const http::response* response;
+        uint64_t offset;
+        std::function<void()> on_send;
+      };
+      auto context = new read_context();
+      context->response = &response;
+      context->offset = 0;
+      context->on_send = std::move(on_send);
 
-      if (response.body.length() == offset) {
-        auto on_send = std::move(context->on_send);
-        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
-        delete context;
-        on_send();
-      }
+      data_provider.source.ptr = (void*)context;
+      data_provider.read_callback = [](nghttp2_session* session, int32_t stream_id, uint8_t* buf, size_t length,
+                                        uint32_t* data_flags, nghttp2_data_source* source, void* user_data) -> ssize_t {
+        auto context = (read_context*)source->ptr;
+        const auto& response = *context->response;
 
-      return copy_length;
-    };
+        auto& offset = context->offset;
+        size_t copy_length = std::min(response.body.length(), length);
+        memcpy(buf, response.body.data() + offset, copy_length);
+        offset += copy_length;
 
-    int rv = nghttp2_submit_response(_session, stream_id, headers.data(), headers.size(), &data_provider);
+        if (response.body.length() == offset) {
+          auto on_send = std::move(context->on_send);
+          *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+          delete context;
+          on_send();
+        }
+
+        return copy_length;
+      };
+    }
+
+    int rv = nghttp2_submit_response(_session, stream_id, headers.data(), headers.size(), data_provider_ptr);
     if (rv != 0) {
       throw http::error{nghttp2_strerror(rv)};
     }
+
+    if (!data_provider_ptr) {
+      on_send();
+    }
   }
 
-#ifndef HTTPPP_NO_TASK
-  task<void> submitResponse(const http::response& response, int32_t stream_id) {
-    return task<void>::create([this, &response, stream_id](auto& resolve, auto&) {
-      submitResponse(response, stream_id, resolve);
+#ifdef HTTPPP_TASK_INCLUDE
+  HTTPPP_TASK_TYPE<void> submitResponse(int32_t stream_id, const http::response& response) {
+    return HTTPPP_TASK_CREATE<void>([this, stream_id, &response](auto& resolve, auto&) {
+      submitResponse(stream_id, response, std::move(resolve));
     });
   }
 #endif
@@ -334,13 +400,6 @@ private:
   int onStreamClose(int32_t stream_id) {
     auto& result = _result[stream_id];
 
-    if (result.headers["content-encoding"] == "gzip") {
-      int rc = http::uncompress(result.body);
-      if (rc != 0) {
-        return rc;
-      }
-    }
-
     if (_on_stream_end) {
       _on_stream_end(stream_id, std::move(result));
 
@@ -362,3 +421,4 @@ private:
   }
 };
 } // namespace http2
+#endif

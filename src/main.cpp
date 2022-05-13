@@ -1,28 +1,54 @@
-// #define UVPP_PERF 1
+#define USE_SQLITE 1
+// #define USE_PGSQL 1
 
-#include "http.hpp"
-#include "twitchircbot.hpp"
-#include "uv.hpp"
+#include "logging.hpp"
 #include "db.hpp"
-#include "db-sqlite.hpp"
+#ifdef USE_SQLITE
+#include "db/sqlite.hpp"
+#include "db/sqlite-createftssynctriggers.h"
+#include "db/sqlite-createisotimestamptriggers.h"
+#include "db/sqlite-sanitizewebsearch.h"
+#endif
+#ifdef USE_PGSQL
+#include "db/pgsql.hpp"
+#endif
 #include "ulid_uint128.hh"
 #include <iostream>
 #include <regex>
 #include "json.hpp"
 #include "finally.hpp"
+#include "uv.hpp"
+#include "http/base64.hpp"
+#include <algorithm>
+#include <random>
+#include "http.hpp"
+#include "http/serve.hpp"
+#include "http/websocket.hpp"
+#include <set>
+#include "irc/twitch-bot.hpp"
 
 #include <cmrc/cmrc.hpp>
 CMRC_DECLARE(res);
 
-template<typename ...Args>
-std::string string_format(const std::string& format, Args... args) {
-  int size_s = std::snprintf(nullptr, 0, format.c_str(), args...) + 1; // Extra space for '\0'
-  if (size_s <= 0) { throw std::runtime_error("Error during formatting."); }
-  auto size = static_cast<size_t>(size_s);
-  auto buf = std::make_unique<char[]>(size);
-  std::snprintf(buf.get(), size, format.c_str(), args...);
-  return std::string(buf.get(), buf.get() + size - 1); // We don't want the '\0' inside
-}
+#define __CPP20 202002L
+#define __CPP17 201703L
+#define __CPP14 201402L
+#define __CPP11 201103L
+
+#define __IS_CLANG false
+#define __IS_GCC false
+#define __IS_MSVC false
+
+#if defined(__clang__)
+#undef __IS_CLANG
+#define __IS_CLANG true
+#elif defined(__GNUC__)
+#undef __IS_GCC
+#define __IS_GCC true
+#elif defined(_MSC_VER)
+#undef __IS_MSVC
+#define __IS_MSVC true
+#endif
 
 std::size_t string_replace_all(std::string& inout, std::string_view what, std::string_view with) {
   std::size_t count{};
@@ -38,7 +64,7 @@ std::size_t string_remove_all(std::string& inout, std::string_view what) {
   return string_replace_all(inout, what, "");
 }
 
-std::string expand_macros(std::istream& in, const std::unordered_map<std::string, std::string>& defines) {
+std::string sql_expand_macros(std::istream& in, const std::unordered_map<std::string, std::string>& defines) {
   std::string_view IFDEF = "--#ifdef";
   std::string_view ELIF = "--#elif";
   std::string_view ELSE = "--#else";
@@ -51,30 +77,26 @@ std::string expand_macros(std::istream& in, const std::unordered_map<std::string
   bool ifdef_was_valid = false;
 
   for (std::string line; std::getline(in, line, '\n'); ) {
-    const auto lineStartsWith = [&line](std::string_view keyword) {
-      return line.length() >= keyword.length() && line.substr(0, keyword.length()) == keyword;
-    };
-
     if (line.empty()) {
       result += '\n';
-    } else if (lineStartsWith(IFDEF)) {
+    } else if (line.starts_with(IFDEF)) {
       ifdef_depth += 1;
       ifdef_valid = defines.count(line.substr(IFDEF.length() + 1)) != 0;
-    } else if (lineStartsWith(ELIF)) {
+    } else if (line.starts_with(ELIF)) {
       if (ifdef_depth > 0 && !ifdef_valid && !ifdef_was_valid) {
         ifdef_valid = defines.count(line.substr(ELIF.length() + 1)) != 0;
       } else {
         ifdef_valid = false;
         ifdef_was_valid = true;
       }
-    } else if (lineStartsWith(ELSE)) {
+    } else if (line.starts_with(ELSE)) {
       if (ifdef_depth > 0 && !ifdef_valid && !ifdef_was_valid) {
         ifdef_valid = true;
       } else {
         ifdef_valid = false;
         ifdef_was_valid = true;
       }
-    } else if (lineStartsWith(ENDIF)) {
+    } else if (line.starts_with(ENDIF)) {
       ifdef_depth -= 1;
       ifdef_valid = true;
       ifdef_was_valid = false;
@@ -86,72 +108,106 @@ std::string expand_macros(std::istream& in, const std::unordered_map<std::string
   return result;
 }
 
-std::string expand_macros(std::string_view in, const std::unordered_map<std::string, std::string>& defines) {
+std::string sql_expand_macros(std::string_view in, const std::unordered_map<std::string, std::string>& defines) {
   std::stringstream stream{std::string{in}};
-  return expand_macros(stream, defines);
+  return sql_expand_macros(stream, defines);
+}
+
+auto registerDatabaseUpgradeMacros(db::connection& connection) {
+#ifdef USE_SQLITE
+  db::sqlite::loadExtension(connection, sqlite3_createisotimestamptriggers_init);
+  db::sqlite::loadExtension(connection, sqlite3_createftssynctriggers_init);
+#endif
+
+  return finally{[&connection]() {
+#ifdef USE_SQLITE
+    db::sqlite::loadExtension(connection, sqlite3_createftssynctriggers_deinit);
+    db::sqlite::loadExtension(connection, sqlite3_createisotimestamptriggers_deinit);
+#endif
+  }};
 }
 
 void registerDatabaseUpgradeScripts(db::datasource& datasource) {
   for (auto entry : cmrc::res::get_filesystem().iterate_directory("src/res/sql/upgrades")) {
     auto filename = entry.filename();
-    auto version = std::stoi(filename.substr(1, 4));
+    auto version = std::stoi(filename.substr(1, 5));
 
     datasource.updates().push_back({version,
         [path{"src/res/sql/upgrades/" + filename}](db::connection& connection) {
           auto file = cmrc::res::get_filesystem().open(path);
-          auto script = std::string{file.begin(), file.size()};
+          auto data = std::string_view{file.begin(), file.size()};
 
+          auto script = sql_expand_macros(data, {
+#ifdef USE_SQLITE
+            {"USE_SQLITE", "1"},
+#endif
+#ifdef USE_PGSQL
+            {"USE_PGSQL", "1"},
+#endif
+          });
+
+          auto macros = registerDatabaseUpgradeMacros(connection);
           connection.execute(script);
         },
         [path{"src/res/sql/downgrades/" + filename}](db::connection& connection) {
           auto file = cmrc::res::get_filesystem().open(path);
-          auto script = std::string{file.begin(), file.size()};
+          auto data = std::string_view{file.begin(), file.size()};
 
+          auto script = sql_expand_macros(data, {
+#ifdef USE_SQLITE
+            {"USE_SQLITE", "1"},
+#endif
+#ifdef USE_PGSQL
+            {"USE_PGSQL", "1"},
+#endif
+          });
+
+          auto macros = registerDatabaseUpgradeMacros(connection);
           connection.execute(script);
         }});
   }
 }
 
-void handleConnectionCreate(db::connection& conn) {
-  conn.execute("PRAGMA journal_mode = WAL");
-  conn.execute("PRAGMA synchronous = normal");
-  conn.execute("PRAGMA temp_store = memory");
-  conn.execute("PRAGMA mmap_size = 268435456");
-  conn.execute("PRAGMA cache_size = -10000");
-  conn.execute("PRAGMA foreign_keys = ON");
+using json = nlohmann::json;
 
-  db::sqlite::createScalarFunction(conn, "create_iso_timestamp_triggers", [](sqlite3* _conn, sqlite3_context* context, int argc, sqlite3_value** argv) {
-    auto conn = db::sqlite::convertConnection(_conn);
-    auto table = db::sqlite::getString(argv[0]);
-    auto column = db::sqlite::getString(argv[1]);
+namespace nlohmann {
+template <typename T>
+struct adl_serializer<std::optional<T>> {
+  static void from_json(const json& j, std::optional<T>& opt) {
+    if (!j.is_null()) {
+      opt = j.get<T>();
+    } else {
+      opt = std::nullopt;
+    }
+  }
 
-    std::string script = R"~(
-CREATE TRIGGER "trg_${TABLE}_after_insert_of_${COLUMN}_fix_iso_timestamp" AFTER INSERT ON "${TABLE}"
-BEGIN
-UPDATE "${TABLE}"
-SET "${COLUMN}" = strftime('%Y-%m-%dT%H:%M:%fZ', NEW."${COLUMN}")
-WHERE rowid = NEW.rowid;
-END;
-
-CREATE TRIGGER "trg_${TABLE}_after_update_of_${COLUMN}_fix_iso_timestamp" AFTER UPDATE OF "${COLUMN}" ON "${TABLE}"
-WHEN NEW."${COLUMN}" IS NOT OLD."${COLUMN}"
-BEGIN
-UPDATE "${TABLE}"
-SET "${COLUMN}" = strftime('%Y-%m-%dT%H:%M:%fZ', NEW."${COLUMN}")
-WHERE rowid = NEW.rowid;
-END;
-    )~";
-
-    string_replace_all(script, "${TABLE}", table);
-    string_replace_all(script, "${COLUMN}", column);
-
-    conn.execute(script);
-  });
-
-  db::transaction transaction{conn};
-  conn.execute("PRAGMA defer_foreign_keys = ON");
-  conn.upgrade();
+  static void to_json(json& j, const std::optional<T>& opt) {
+    if (opt) {
+      j = *opt;
+    } else {
+      j = nullptr;
+    }
+  }
+};
 }
+
+// task<std::vector<TriviaQuestionJson>> getGazatuXyzQuestions(std::string_view count = "0", std::string_view config = "") {
+//   http::url url{"https://api.gazatu.xyz/trivia/questions"};
+//   // url.query({
+//   //   {"verified", "true"},
+//   //   {"count", (std::string)count},
+//   // });
+//   // if (!config.empty()) {
+//   //   url.query(url.query() + std::string{"&"} + (std::string)config);
+//   // }
+
+//   auto response = co_await http::fetch(url);
+//   std::cout << (std::string)response << std::endl;
+
+//   auto json = json::parse(response.body);
+
+//   co_return json;
+// }
 
 namespace db::orm {
 template <>
@@ -170,8 +226,21 @@ struct idmeta<ulid::ULID> {
     return ulid::Marshal(value);
   }
 
-  static ulid::ULID fromString(const std::string& string) {
+  static ulid::ULID fromString(std::string_view string) {
     return ulid::Unmarshal(string);
+  }
+};
+}
+
+namespace nlohmann {
+template <>
+struct adl_serializer<ulid::ULID> {
+  static void from_json(const json& j, ulid::ULID& value) {
+    value = ulid::Unmarshal(j.get<std::string>());
+  }
+
+  static void to_json(json& j, const ulid::ULID& value) {
+    j = ulid::Marshal(value);
   }
 };
 }
@@ -182,475 +251,504 @@ std::ostream& operator<<(std::ostream& os, ulid::ULID v) {
   return os;
 }
 
-// struct TwitchUser {
-//   std::string id = "";
-//   std::string name = "";
+std::vector<std::string_view> string_split(std::string_view string, const std::regex& regex) {
+  std::vector<std::string_view> result;
 
-//   operator bool() {
-//     return id != "";
-//   }
-// };
-
-// DB_ORM_SPECIALIZE(TwitchUser, id, name);
-// DB_ORM_PRIMARY_KEY(TwitchUser, id);
-using json = nlohmann::json;
-
-namespace nlohmann {
-template <typename T>
-struct adl_serializer<std::optional<T>> {
-  static void to_json(json& j, const std::optional<T>& opt) {
-    if (opt) {
-      j = *opt;
-    } else {
-      j = nullptr;
-    }
+  std::cregex_token_iterator iter{string.begin(), string.end(), regex, -1};
+  for (std::cregex_token_iterator end; iter != end; ++iter) {
+    result.push_back({iter->first, (std::string_view::size_type)iter->length()});
   }
 
-  static void from_json(const json& j, std::optional<T>& opt) {
-    if (!j.is_null()) {
-      opt = j.get<T>();
-    } else {
-      opt = std::nullopt;
+  return result;
+}
+
+namespace nlohmann {
+template <>
+struct adl_serializer<db::statement::parameter_access> {
+  static void from_json(const json& j, db::statement::parameter_access& params) {
+    if (!j.is_object()) {
+      return;
+    }
+
+    for (const auto& [key, value] : j.items()) {
+      switch (value.type()) {
+        case json::value_t::null:
+          params[key] = std::nullopt;
+          break;
+        case json::value_t::string:
+          params[key] = (std::string)value;
+          break;
+        case json::value_t::boolean:
+          params[key] = (bool)value;
+          break;
+        case json::value_t::number_integer:
+          params[key] = (int64_t)value;
+          break;
+        case json::value_t::number_unsigned:
+          params[key] = (uint64_t)value;
+          break;
+        case json::value_t::number_float:
+          params[key] = (double)value;
+          break;
+      }
+    }
+  }
+};
+
+template <>
+struct adl_serializer<db::resultset> {
+  static void to_json(json& j, const db::resultset& resultset) {
+    for (auto column : resultset.columns()) {
+      switch (resultset.type(column)) {
+        case db::orm::field_type::UNKNOWN:
+          j[(std::string)column] = nullptr;
+          break;
+        case db::orm::field_type::BOOLEAN:
+          j[(std::string)column] = resultset.get<bool>(column);
+          break;
+        case db::orm::field_type::INT32:
+          j[(std::string)column] = resultset.get<int32_t>(column);
+          break;
+        case db::orm::field_type::INT64:
+          j[(std::string)column] = resultset.get<int64_t>(column);
+          break;
+        case db::orm::field_type::DOUBLE:
+          j[(std::string)column] = resultset.get<double>(column);
+          break;
+        case db::orm::field_type::STRING:
+        case db::orm::field_type::DATE:
+        case db::orm::field_type::TIME:
+        case db::orm::field_type::DATETIME:
+          j[(std::string)column] = resultset.get<std::string>(column);
+          break;
+        case db::orm::field_type::BLOB:
+          j[(std::string)column] = base64::encode(resultset.value<std::vector<uint8_t>>(column));
+          break;
+      }
     }
   }
 };
 }
 
-namespace trivia {
-struct Question {
-  std::string category;
+struct TriviaCategory {
+  ulid::ULID id = 0;
+  std::string name;
+  std::optional<std::string> description;
+  std::optional<std::string> submitter;
+  std::optional<ulid::ULID> submitterUserId;
+  bool verified = false;
+  bool disabled = false;
+  std::string createdAt;
+  std::string updatedAt;
+  std::optional<ulid::ULID> updatedByUserId;
+};
+
+DB_ORM_SPECIALIZE(TriviaCategory, id, name, description, submitter, submitterUserId, verified, disabled, createdAt, updatedAt, updatedByUserId);
+DB_ORM_PRIMARY_KEY(TriviaCategory, id);
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TriviaCategory, id, name, description, submitter, verified, disabled, createdAt, updatedAt);
+
+struct TriviaQuestion {
+  ulid::ULID id = 0;
+  ulid::ULID categoryId = 0;
+  TriviaCategory category{};
   std::string question;
   std::string answer;
   std::optional<std::string> hint1;
   std::optional<std::string> hint2;
+  std::optional<std::string> submitter;
+  std::optional<ulid::ULID> submitterUserId;
+  bool verified = false;
+  bool disabled = false;
+  std::string createdAt;
+  std::string updatedAt;
+  std::optional<ulid::ULID> updatedByUserId;
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Question, category, question, answer, hint1, hint2);
+DB_ORM_SPECIALIZE(TriviaQuestion, id, categoryId, question, answer, hint1, hint2, submitter, submitterUserId, verified, disabled, createdAt, updatedAt, updatedByUserId);
+DB_ORM_PRIMARY_KEY(TriviaQuestion, id);
 
-task<std::vector<Question>> getGazatuXyzQuestions(std::string_view count = "0", std::string_view config = "") {
-  http::url url{"https://api.gazatu.xyz/trivia/questions"};
-  url.query({
-    {"verified", "true"},
-    {"count", (std::string)count},
-  });
-  if (!config.empty()) {
-    url.query(url.query() + std::string{"&"} + (std::string)config);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TriviaQuestion, id, categoryId, category, answer, hint1, hint2, submitter, verified, disabled, createdAt, updatedAt);
+
+#ifdef USE_SQLITE
+struct TriviaQuestionFTS {
+  uint64_t rowid;
+};
+
+DB_ORM_SPECIALIZE(TriviaQuestionFTS, rowid);
+DB_ORM_PRIMARY_KEY(TriviaQuestionFTS, rowid);
+#endif
+
+struct TriviaReport {
+  ulid::ULID id = 0;
+  ulid::ULID questionId = 0;
+  TriviaQuestion question{};
+  std::string message;
+  std::string submitter;
+  std::optional<ulid::ULID> submitterUserId;
+  std::string createdAt;
+};
+
+DB_ORM_SPECIALIZE(TriviaReport, id, questionId, message, submitter, submitterUserId, createdAt);
+DB_ORM_PRIMARY_KEY(TriviaReport, id);
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TriviaReport, id, questionId, message, submitter, createdAt);
+
+#define SearchSortPageOptionsMixin \
+  std::optional<std::string> search;\
+  std::optional<std::string> orderBy;\
+  std::optional<std::string> orderByDirection;\
+  std::optional<uint32_t> offset;\
+  std::optional<uint32_t> limit;
+
+struct TriviaQuestionSelectOptions {
+  SearchSortPageOptionsMixin;
+
+  std::optional<bool> verified = true;
+  std::optional<bool> disabled = false;
+  std::optional<bool> dangling = false;
+  std::optional<bool> reported;
+
+  std::optional<bool> shuffle = false;
+};
+
+HTTP_QUERY_PARAMS_SPECIALIZE(TriviaQuestionSelectOptions, search, orderBy, orderByDirection, offset, limit, verified, disabled, dangling, reported, shuffle);
+
+auto selectTriviaQuestions(db::orm::repository& repo, const TriviaQuestionSelectOptions& opts = {}) {
+  auto query = repo
+    .select()
+    .from(_TriviaQuestion{"src"})
+    .join(_TriviaCategory{"cat"}).on(_TriviaCategory{"cat"}.id == _TriviaQuestion{"src"}.categoryId);
+
+  if (opts.verified) {
+    query
+      .where(
+        _TriviaQuestion{"src"}.verified == *opts.verified
+      );
   }
 
-  auto response = co_await http::fetch(url);
-  std::cout << (std::string)response << std::endl;
+  if (opts.disabled) {
+    query
+      .where(
+        _TriviaQuestion{"src"}.disabled == *opts.disabled
+      );
+  }
 
-  auto json = json::parse(response.body);
+  if (opts.dangling) {
+    query
+      .where(
+        (
+          _TriviaCategory{"cat"}.verified == false ||
+          _TriviaCategory{"cat"}.disabled == true
+        ) == *opts.dangling
+      );
+  }
 
-  co_return json;
+  if (opts.reported) {
+    query
+      .where(repo
+        .select()
+        .from(_TriviaReport{"rep"})
+        .where(
+          _TriviaReport{"rep"}.questionId == _TriviaQuestion{"src"}.id
+        )
+        .exists(":reported", *opts.reported)
+      );
+  }
+
+  if (opts.search && *opts.search != "") {
+    query
+#ifdef USE_SQLITE
+      .join(_TriviaQuestionFTS{"fts"}).on("fts.rowid = src.rowid")
+      .where("TriviaQuestionFTS MATCH sanitize_web_search(:search)")
+      .orderBy("fts.rank", db::orm::ASCENDING)
+#endif
+#ifdef USE_PGSQL
+      .select({{"ts_rank_cd(src.__tsvector, search)", "rank"}})
+      .join("plainto_tsquery(:search)", "search").always()
+      .where("search @@ src.__tsvector")
+      .orderBy("rank", db::orm::DESCENDING)
+#endif
+      .bind(":search", *opts.search);
+  }
+
+  uint32_t offset = opts.offset.value_or(0u);
+  uint32_t limit = std::min(opts.limit.value_or(100u), 100u);
+
+  if (opts.shuffle.value_or(false)) {
+    auto result = query
+      .findMany<TriviaQuestion>()
+      .toVector();
+
+    std::random_device rd{};
+    std::default_random_engine rng{rd()};
+    std::shuffle(std::begin(result), std::end(result), rng);
+
+    if (result.size() > limit) {
+      result.resize(limit);
+    }
+
+    return result;
+  } else {
+    auto orderBy = opts.orderBy;
+    // TODO: category.name
+    if (!orderBy || !_TriviaQuestion::has(*orderBy)) {
+      orderBy = _TriviaQuestion{}.updatedAt.name;
+    }
+
+    auto orderByDirection = opts.orderByDirection;
+    if (!orderByDirection) {
+      orderByDirection = "DESC";
+    }
+
+    query
+      .orderBy("src." + *orderBy, *orderByDirection == "ASC" ? db::orm::ASCENDING : db::orm::DESCENDING)
+      .offset(offset)
+      .limit(limit);
+
+    return query
+      .findMany<TriviaQuestion>()
+      .toVector();
+  }
 }
 
-struct {
-  bool stopped = true;
-  bool running = false;
-} state;
+task<int> amain2() {
+  while (true) {
+    uv::signalof<SIGINT> sigint;
 
-task<void> run(irc::twitch::bot& bot, const irc::privmsg& privmsg, std::cmatch&& match) {
-  if (match.str(1) == "stop") {
-    state.stopped = true;
-    co_return;
-  }
+    irc::twitch::bot bot;
 
-  if (state.running) {
-    co_return;
-  }
+    websocket::handler ws{websocket::IS_CLIENT};
 
-  state.running = true;
-  state.stopped = false;
+    uv::tcp tcp;
 
-  finally cleanup{[&]() {
-    state.running = false;
-    bot.send(privmsg, "trivia ended nam").start();
-  }};
+    http::request request = websocket::http::upgrade({
+        .url = "wss://irc-ws.chat.twitch.tv",
+        // .url = "wss://ws.postman-echo.com/raw",
+        // .proxy = {
+        //   .host = "proxy-iuk.ofd-h.de",
+        //   .port = 8080,
+        // },
+    });
+    http::response response = co_await http::fetch(request, tcp);
+    std::cout << (std::string)response << std::endl;
 
-  auto questions = co_await trivia::getGazatuXyzQuestions("3");
-
-  for (int i = 0; i < questions.size(); i++) {
-    auto& question = questions[i];
-
-    if (!question.hint1) {
-      question.hint1 = "";
-
-      for (int i = 0; i < question.answer.length(); i++) {
-        if (question.answer[i] == ' ') {
-          *question.hint1 += question.answer[i];
-        } else {
-          *question.hint1 += "_";
-        }
+    tcp.readStart([&](auto chunk, auto error) {
+      if (error) {
+        sigint.cancel();
+        return;
       }
-    }
 
-    if (!question.hint2) {
-      question.hint2 = "";
+      ws.feed(chunk);
+    });
 
-      for (int i = 0; i < question.answer.length(); i++) {
-        if (question.answer[i] == ' ' || i < (question.answer.length() * 0.5)) {
-          *question.hint2 += question.answer[i];
-        } else {
-          *question.hint2 += "_";
-        }
+    ws.onSend([&](auto chunk) {
+      tcp.write(chunk).start();
+    });
+
+    ws.onRecv([&](const auto& msg) {
+      if (msg.kind == websocket::message::TEXT) {
+        bot.feed(msg.payload);
       }
-    }
+    });
 
-    if (!state.running || state.stopped) {
+    bot.onSendWithWriter([&](auto line) {
+      ws.send(line);
+    });
+
+    bot.handle<irc::unknown>([&](const auto& unknown) {
+      std::cout << (std::string)unknown << std::endl;
+    });
+
+    bot.handle<irc::reconnect>([&](const auto&) {
+      sigint.cancel();
+    });
+
+    bot.handle<irc::privmsg>([&](const auto& privmsg) {
+      std::cout << "#" << privmsg.channel() << " " << privmsg.sender() << ": " << privmsg.message() << std::endl;
+    });
+
+    uv::tty ttyin{uv::tty::STDIN};
+    ttyin.readLinesAsViews([&](auto line, auto error) {
+      if (error) {
+        sigint.cancel();
+        return;
+      }
+
+      if (line.starts_with(".close")) {
+        ws.close();
+        return;
+      }
+
+      if (line.starts_with(".auth")) {
+        std::cmatch match;
+        std::regex_search(std::begin(line), std::end(line), match, std::regex{"^\\.auth (\\S+) (\\S+)"});
+        bot.auth(match[1].str(), match[2].str()).start();
+        return;
+      }
+
+      if (line.starts_with(".join")) {
+        std::cmatch match;
+        std::regex_search(std::begin(line), std::end(line), match, std::regex{"^\\.join #(\\w+)"});
+        bot.join(match[1].str()).start();
+        return;
+      }
+
+      if (line.starts_with(".part")) {
+        std::cmatch match;
+        std::regex_search(std::begin(line), std::end(line), match, std::regex{"^\\.part #(\\w+)"});
+        bot.part(match[1].str());
+        return;
+      }
+
+      std::cmatch match;
+      std::regex_search(std::begin(line), std::end(line), match, std::regex{"^#(\\w+) "});
+      bot.send(match[1].str(), match.suffix().str()).start();
+    });
+
+    if (co_await sigint.once()) {
       break;
     }
-
-    co_await bot.send(privmsg, string_format("%d/%d category: %s 🤔 question: %s", i + 1, questions.size(), question.category.data(), question.question.data()));
-
-    uv::timer timer1;
-    uv::timer timer2;
-    uv::timer timer3;
-
-    timer1.startOnce(15000, [&]() {
-      bot.send(privmsg, string_format("trivia hint %s", question.hint1->data()));
-    });
-
-    timer2.startOnce(30000, [&]() {
-      bot.send(privmsg, string_format("trivia hint %s", question.hint2->data()));
-    });
-
-    std::function<void(const irc::privmsg&)> onmsg;
-
-    auto done = task<>::create([&](auto& resolve, auto& reject) {
-      timer3.startOnce(45000, [&]() {
-        bot.send(privmsg, string_format("you guys suck 🤣 the answer was: `%s`", question.answer.data()));
-        resolve();
-      });
-
-      onmsg = [&](auto& answer) {
-        if (answer.channel() != privmsg.channel()) {
-          return;
-        }
-
-        auto similarity = 0;
-        if (similarity < 0.9) {
-          return;
-        }
-
-        timer1.stop();
-        timer2.stop();
-        timer3.stop();
-
-        bot.send(privmsg, string_format("%s got it right miniDank the answer was \"%s\"", answer.sender().data(), question.answer.data())).start();
-
-        resolve();
-      };
-    });
-
-    bot.handle<irc::privmsg>(onmsg);
-
-    co_await done;
-    // TODO
   }
+
+  co_return 0;
 }
-}
 
-// task<void> amain() {
-//   using namespace db::orm::literals;
-//   using db::orm::fields;
+task<int> amain() {
+#ifdef USE_SQLITE
+  db::sqlite::pooled::datasource datasource{".db"};
+#endif
+#ifdef USE_PGSQL
+  db::pgsql::pooled::datasource datasource{"postgresql://localhost/gazatu_api"};
+#endif
+  registerDatabaseUpgradeScripts(datasource);
 
-//   ssl::openssl::driver openssl_driver;
-//   ssl::context ssl_context{openssl_driver};
+  datasource.onConnectionCreate() = [](db::connection& conn) {
+    // conn.profile(std::cerr);
+    // db::sqlite::profile(conn, std::cerr);
 
-//   db::sqlite::pooled::datasource datasource{".db"};
-//   registerDatabaseUpgradeScripts(datasource);
+#ifdef USE_SQLITE
+    db::sqlite::loadExtension(conn, sqlite3_sanitizewebsearch_init);
+#endif
 
-//   datasource.onConnectionCreate() = [](db::connection& conn) {
-//     std::cout << "onConnectionCreate" << std::endl;
-//     conn.profile(std::cout);
-
-//     handleConnectionCreate(conn);
-//   };
-
-//   datasource.onConnectionOpen() = [](db::connection& conn) {
-//     std::cout << "onConnectionOpen" << std::endl;
-//   };
-
-//   datasource.onConnectionClose() = [](db::connection& conn) {
-//     std::cout << "onConnectionClose" << std::endl;
-
-//     conn.execute("PRAGMA optimize");
-//   };
-
-//   while (true) {
-//     std::cout << "CONNECT" << std::endl;
-
-//     std::string nick = co_await uv::fs::readAll(".irc-nick");
-//     std::string pass = co_await uv::fs::readAll(".irc-pass");
-
-//     irc::twitch::bot bot;
-//     bot.useSSL(ssl_context);
-
-//     co_await bot.connect();
-//     co_await bot.auth(nick, pass);
-//     co_await bot.capreq(irc::out::twitch::cap::TAGS);
-//     co_await bot.capreq(irc::out::twitch::cap::COMMANDS);
-//     co_await bot.join("pajlada");
-
-//     bot.handle<irc::privmsg>([&](const irc::privmsg& privmsg) {
-//       if (privmsg.sender() != "pajbot" || !privmsg.message().starts_with("pajaS 🚨 ALERT")) {
-//         return;
-//       }
-
-//       bot.send(privmsg, "/me FeelsDonkMan 🚨 TERROREM").start();
-//     });
-
-//     // bot.command(std::regex{R"~(^pajaS 🚨 ALERT)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-//     //   if (privmsg.sender() != "pajbot") {
-//     //     return;
-//     //   }
-
-//     //   bot.send(privmsg, match.str(1)).start();
-//     // });
-
-//     bot.command(std::regex{R"~(^!vhns\s+is\s+(.*))~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-//       bot.send(privmsg, match.str(1)).start();
-//     });
-
-//     bot.command(std::regex{R"~(^!i\+\+)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-//       db::orm::repository repo{datasource};
-
-//       auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
-
-//       auto counter = repo
-//         .select<Counter>()
-//         .where(
-//           fields<Counter>::twitch_user_id == twitch_user_id
-//         )
-//         .findOne()
-//         .value_or(Counter{
-//           .twitch_user_id = twitch_user_id,
-//         });
-
-//       auto i = counter.i++;
-
-//       repo.save(counter);
-//       std::cout << "id: " << counter.id << std::endl;
-
-//       // auto twitch_user = counter.twitch_user(repo);
-//       // if (!twitch_user) {
-//       //   twitch_user.name = privmsg.sender();
-//       //   repo.save(twitch_user);
-//       // }
-
-//       bot.reply(privmsg, std::to_string(i)).start();
-//     });
-
-//     bot.command(std::regex{R"~(^!idel)~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-//       db::orm::repository repo{datasource};
-
-//       auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
-
-//       auto counter = repo.select<Counter>()
-//         .where(
-//           fields<Counter>::twitch_user_id == twitch_user_id
-//         )
-//         .findOne()
-//         .value_or(Counter{});
-
-//       std::cout << "id: " << counter.id << std::endl;
-//       repo.remove(counter);
-
-//       auto i = counter.i;
-
-//       bot.reply(privmsg, std::to_string(i)).start();
-//     });
-
-//     bot.command(std::regex{R"~(^!i\=(\d+))~"}, [&](const irc::privmsg& privmsg, std::cmatch&& match) {
-//       db::orm::repository repo{datasource};
-
-//       auto twitch_user_id = (std::string)privmsg[irc::twitch::tags::USER_ID];
-
-//       auto counter = repo.select<Counter>()
-//         .where(
-//           fields<Counter>::twitch_user_id == twitch_user_id
-//         )
-//         .findOne()
-//         .value_or(Counter{
-//           .twitch_user_id = twitch_user_id,
-//         });
-
-//       try {
-//         counter.i = std::stoll(match.str(1));
-//       } catch (...) {
-//         bot.reply(privmsg, "fdm").start();
-//         return;
-//       }
-
-//       auto i = counter.i;
-
-//       repo.save(counter);
-//       std::cout << "id: " << counter.id << std::endl;
-
-//       bot.reply(privmsg, std::to_string(i)).start();
-//     });
-
-//     co_await bot.readMessagesUntilEOF();
-//   }
-
-//   // uv::tty ttyin(uv::tty::STDIN);
-//   // uv::tty ttyout(uv::tty::STDOUT);
-//   // co_await ttyin.readLinesAsViewsUntilEOF([&](auto line) {
-//   //   task<>::run([&]() -> task<void> {
-//   //     auto start = uv::hrtime();
-
-//   //     http::response response = co_await http::fetch(line);
-//   //     if (!response) {
-//   //       // throw http::error{response};
-//   //     }
-
-//   //     std::cout << (std::string)response << std::endl;
-
-//   //     auto end = uv::hrtime();
-
-//   //     std::cout << "request done: " << ((end - start) * 1e-6) << " ms" << std::endl;
-//   //   });
-//   // });
-// }
-
-int main() {
-  ssl::openssl::driver openssl_driver;
-  ssl::context ssl_context{openssl_driver, ssl::ACCEPT};
-  ssl_context.usePrivateKeyFile("server-key.pem");
-  ssl_context.useCertificateFile("server-cert.pem");
-  ssl_context.useALPNCallback({"h2", "http/1.1"});
-
-  auto callback = [&](http::request& request, http::response& response) -> task<void> {
-    // std::cout << (std::string)request << std::endl;
-
-    // auto test = co_await http::fetch("https://api.gazatu.xyz/trivia/questions?count=5");
-
-    response.headers["content-type"] = "text/plain";
-    response.body = "Hello World!";
-
-    // std::cout << (std::string)response << std::endl;
-
-    if (request.headers["accept-encoding"].find("gzip") != std::string::npos) {
-      response.headers["content-encoding"] = "gzip";
-      http::compress(response.body);
-    }
-
-    response.headers["content-length"] = std::to_string(response.body.length());
-
-    co_return;
+    db::transaction transaction{conn};
+#ifdef USE_SQLITE
+    conn.execute("PRAGMA defer_foreign_keys = ON");
+#endif
+    conn.upgrade();
   };
 
+  datasource.onConnectionClose() = [](db::connection& conn) {
+#ifdef USE_SQLITE
+    conn.execute("PRAGMA optimize");
+#endif
+  };
+
+  // db::connection conn{datasource};
+  // db::orm::repository repo{conn};
+
+  // conn.execute("DELETE FROM \"TriviaQuestion\"");
+  // conn.execute("DELETE FROM \"TriviaCategory\"");
+
+  auto count = db::orm::repository{datasource}
+    .count<TriviaQuestion>();
+
+  if (count == 0) {
+    auto data = co_await uv::fs::readAll("./questions.json");
+    auto json = json::parse(data);
+
+    db::orm::repository repo{datasource};
+    db::transaction transaction{repo};
+    for (const auto& source : json) {
+      auto category = repo
+        .findOne<TriviaCategory>(
+          _TriviaCategory{}.name == source["category"]
+        )
+        .value_or(TriviaCategory{
+          .name = source["category"],
+          .verified = true,
+        });
+
+      if (!category.id) {
+        repo.save(category);
+      }
+
+      TriviaQuestion question{
+        .categoryId = category.id,
+        .question = source["question"],
+        .answer = source["answer"],
+        .hint1 = source["hint1"].get<std::optional<std::string>>(),
+        .hint2 = source["hint2"].get<std::optional<std::string>>(),
+        .submitter = source["submitter"].get<std::optional<std::string>>(),
+        .verified = true,
+      };
+
+      repo.save(question);
+    }
+  }
+
+  std::cout << "ready" << std::endl;
+
   uv::tcp server;
-  server.useSSL(ssl_context);
   server.bind4("127.0.0.1", 8001);
-  // server.bind6("::1", 8001);
-  server.listen([&](auto error) {
-    task<>::run([&]() -> task<void> {
-      uv::tcp client;
-      co_await server.accept(client);
 
-      if (client.sslState().protocol() == "h2") {
-        http2::handler<http::request> handler;
+  http::serve::listen(server, [&](http::request& request, http::response& response) -> task<void> {
+    db::orm::repository repo{datasource};
 
-        handler.onSend([&](auto input) {
-          client.write((std::string)input).start();
-        });
+    TriviaQuestionSelectOptions options;
+    http::serve::deserializeQuery(request.url, options);
 
-        std::unordered_map<int32_t, std::function<void()>> on_close;
+    auto questions = selectTriviaQuestions(repo, options);
 
-        client.readStart([&](auto chunk, auto error) {
-          if (error) {
-            for (auto& [key, fn] : on_close) {
-              fn();
-            }
+    std::set<ulid::ULID> categoryids;
+    for (auto& question : questions) {
+      categoryids.emplace(question.categoryId);
+    }
+    auto categories = repo.findManyById<TriviaCategory>(categoryids).toVector();
 
-            handler.close();
-          } else {
-            handler.execute(chunk);
-          }
-        });
-
-        handler.submitSettings();
-        handler.sendSession();
-
-        handler.onStreamEnd([&](int32_t id, http::request&& request) {
-          task<>::run([&handler, &callback, id, &request, &on_close]() -> task<void> {
-            bool closed = false;
-            on_close.emplace(id, [&closed]() {
-              closed = true;
-            });
-
-            http::request _request = std::move(request);
-            http::response _response;
-            co_await callback(_request, _response);
-
-            if (closed) {
-              co_return;
-            } else {
-              on_close.erase(id);
-            }
-
-            auto on_sent = handler.submitResponse(_response, id);
-            handler.sendSession();
-            co_await on_sent;
-          });
-        });
-
-        co_await handler.onComplete();
-        if (!handler) {
-          // throw http::error{"unexpected EOF"};
-        }
-
-        if (client.isActive()) {
-          co_await client.shutdown();
-        }
-      } else {
-        while (true) {
-          http::parser<http::request> parser;
-
-          client.readStart([&](auto chunk, auto error) {
-            if (error) {
-              parser.close();
-            } else {
-              parser.execute(chunk);
-            }
-          });
-
-          http::request request = co_await parser.onComplete();
-          if (!parser) {
-            throw http::error{"unexpected EOF"};
-          }
-
-          http::response response;
-          co_await callback(request, response);
-
-          request.headers["connection"] = "close"; // TODO: fix
-          response.headers["connection"] = "close"; // TODO: fix
-
-          if (client.isActive()) {
-            co_await client.write((std::string)response);
-
-            if (request.headers["connection"] == "close") {
-              co_await client.shutdown();
-              break;
-            }
-          } else {
-            break;
-          }
+    for (auto& question : questions) {
+      for (auto& category : categories) {
+        if (category.id == question.categoryId) {
+          question.category = category;
+          break;
         }
       }
-    });
+    }
+
+    response.headers["content-type"] = "application/json";
+
+    if (request.url.queryvalue<bool>("simplified").value_or(false)) {
+      json body;
+      for (auto& question : questions) {
+        body.push_back({
+          {"id", question.id},
+          {"category", question.category.name},
+          {"question", question.question},
+          {"answer", question.answer},
+          {"hint1", question.hint1},
+          {"hint2", question.hint2},
+          {"submitter", question.submitter},
+        });
+      }
+
+      response.body = body.dump(2, ' ');
+    } else {
+      json body = questions;
+      response.body = body.dump(2, ' ');
+    }
+
+    http::serve::normalize(response);
+    co_return;
   });
 
-  // auto amain_task = amain();
-  // amain_task.start_owned();
+  std::cout << "listening" << std::endl;
 
-  uv::run();
+  co_await uv::signal::sonce(SIGINT);
+  co_return 0;
+}
 
-  // if (amain_task.done()) {
-  //   amain_task.unpack();
-  // }
-
-  return 0;
+int main() {
+  return amain2().start_blocking([]() {
+    uv::run();
+  });
 }

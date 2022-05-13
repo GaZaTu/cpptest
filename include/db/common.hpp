@@ -19,16 +19,9 @@ struct type_converter {
 };
 
 namespace orm {
-template <typename T>
 class selector;
-
-template <typename T>
 class inserter;
-
-template <typename T>
 class updater;
-
-template <typename T>
 class deleter;
 }
 } // namespace db

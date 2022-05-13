@@ -2,8 +2,8 @@
 
 #include "./error.hpp"
 #include "./req.hpp"
-#ifndef UVPP_NO_TASK
-#include "../task.hpp"
+#ifdef UVPP_TASK_INCLUDE
+#include UVPP_TASK_INCLUDE
 #endif
 #include "uv.h"
 #include <functional>
@@ -52,7 +52,7 @@ void queue(std::function<T()> work_cb, std::function<void(std::optional<T>&&, st
       }));
 }
 
-#ifndef UVPP_NO_TASK
+#ifdef UVPP_TASK_INCLUDE
 template <typename T>
 task<T> queue(std::function<T()> work_cb, uv_loop_t* native_loop = uv_default_loop()) {
   return task<T>::create([work_cb, native_loop](auto& resolve, auto& reject) {

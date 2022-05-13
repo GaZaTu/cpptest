@@ -56,24 +56,15 @@ private:
 namespace dynamic {
 class wrapper : public db::datasource {
 public:
-  wrapper(db::datasource& dsrc) : _dsrc(dsrc) {
-  }
+  wrapper(db::datasource& dsrc);
 
-  std::shared_ptr<db::datasource::connection> getConnection() override {
-    return _dsrc.getConnection();
-  }
+  std::shared_ptr<db::datasource::connection> getConnection() override;
 
-  std::function<void(db::connection&)>& onConnectionOpen() override {
-    return _dsrc.onConnectionOpen();
-  }
+  std::function<void(db::connection&)>& onConnectionOpen() override;
 
-  std::function<void(db::connection&)>& onConnectionClose() override {
-    return _dsrc.onConnectionClose();
-  }
+  std::function<void(db::connection&)>& onConnectionClose() override;
 
-  std::vector<db::orm::update>& updates() override {
-    return _dsrc.updates();
-  }
+  std::vector<db::orm::update>& updates() override;
 
 private:
   db::datasource& _dsrc;

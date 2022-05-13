@@ -2,8 +2,6 @@
 
 #include "irc.hpp"
 #include "irc/twitch.hpp"
-#include "ssl-openssl.hpp"
-#include "uv.hpp"
 // #include "rx.hpp"
 #include <unordered_set>
 
@@ -117,8 +115,10 @@ public:
 
   void command(std::regex&& regexp, std::function<void(const irc::privmsg&, std::cmatch&&)> handler) {
     handle<irc::privmsg>([regexp{std::move(regexp)}, handler{std::move(handler)}](const irc::privmsg& privmsg) {
+      std::string_view msg = privmsg.message();
+
       std::cmatch match;
-      std::regex_search(privmsg.message().begin(), privmsg.message().end(), match, regexp);
+      std::regex_search(std::begin(msg), std::end(msg), match, regexp);
 
       if (!match.empty()) {
         handler(privmsg, std::move(match));
